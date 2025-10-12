@@ -1,0 +1,8 @@
+{
+    "name": "mozdata-claude-plugin",
+    "description": "Plugin to help write queries and work with data at Mozilla",
+    "version": "0.0.1",
+    "author": {
+        "name": "akomar"
+    }
+}
