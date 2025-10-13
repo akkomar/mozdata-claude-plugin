@@ -1,7 +1,7 @@
 {
     "name": "mozdata",
     "description": "Mozilla telemetry discovery and BigQuery query assistance for Glean telemetry data",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "author": {
         "name": "akomar"
     },
