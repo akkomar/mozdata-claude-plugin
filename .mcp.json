@@ -1,8 +1,0 @@
-{
-    "mcpServers": {
-        "dataHub": {
-            "transport": "http",
-            "url": "https://mozilla.acryl.io/integrations/ai/mcp/?token=${DATAHUB_API_TOKEN}"
-        }
-    }
-}

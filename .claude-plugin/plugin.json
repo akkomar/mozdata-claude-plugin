@@ -1,8 +1,13 @@
 {
-    "name": "mozdata-claude-plugin",
-    "description": "Plugin to help write queries and work with data at Mozilla",
+    "name": "mozdata",
+    "description": "Mozilla telemetry discovery and BigQuery query assistance for Glean telemetry data",
     "version": "0.0.1",
     "author": {
         "name": "akomar"
-    }
+    },
+    "homepage": "https://github.com/akkomar/mozdata-claude-plugin",
+    "repository": "https://github.com/akkomar/mozdata-claude-plugin",
+    "license": "MPL-2.0",
+    "keywords": ["mozilla", "telemetry", "bigquery", "glean", "data-analysis"],
+    "commands": ["./commands/"]
 }

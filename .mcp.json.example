@@ -1,0 +1,16 @@
+{
+    "_comment": "This file is provided as a reference only. DO NOT use it directly!",
+    "_reason": "Environment variable substitution in plugin .mcp.json files doesn't work reliably.",
+    "_issue": "https://github.com/anthropics/claude-code/issues/9427",
+    "_instructions": "Configure DataHub MCP at the USER LEVEL instead. See README.md for setup instructions.",
+    "mcpServers": {
+        "dataHub": {
+            "type": "http",
+            "url": "https://mozilla.acryl.io/integrations/ai/mcp/?token=${DATAHUB_API_TOKEN}",
+            "env": {
+                "DATAHUB_API_TOKEN": "${DATAHUB_API_TOKEN}"
+            }
+        }
+    }
+}
+

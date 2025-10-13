@@ -1,0 +1,12 @@
+{
+  "name": "akomar-mozdata-marketplace",
+  "owner": {
+    "name": "akomar"
+  },
+  "plugins": [
+    {
+      "name": "mozdata",
+      "source": "./"
+    }
+  ]
+}
