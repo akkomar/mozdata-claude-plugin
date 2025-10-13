@@ -142,26 +142,26 @@ Mozilla uses two main BigQuery projects:
 - `mozdata.org_mozilla_firefox.metrics` - Firefox Android (release only)
 
 **Aggregate tables** (pre-computed - ALWAYS PREFER THESE):
-- `mozdata.{product}.baseline_clients_daily` - Daily per-client baseline metrics (100x faster than raw baseline)
-- `mozdata.{product}.baseline_clients_last_seen` - 28-day activity windows with bit patterns (best for MAU/retention)
-- `mozdata.{product}_derived.active_users_aggregates_v3` - Pre-aggregated DAU/MAU by dimensions (10-100x faster)
-- `mozdata.search.mobile_search_clients_daily_v2` - Mobile search metrics (45x faster than raw)
-- `mozdata.{product}.events_stream` - Events pre-unnested, one row per event (30x faster than raw events)
+- `mozdata.{product}.baseline_clients_daily` - Daily per-client baseline metrics (typically 100x faster than raw baseline)
+- `mozdata.{product}.baseline_clients_last_seen` - 28-day activity windows with bit patterns (28x faster for MAU calculations)
+- `mozdata.{product}_derived.active_users_aggregates` - Pre-aggregated DAU/MAU by dimensions (typically 100x faster, can range 10-100x)
+- `mozdata.search.mobile_search_clients_daily_v2` - Mobile search metrics (typically 45x faster than raw)
+- `mozdata.{product}.events_stream` - Events pre-unnested, one row per event (typically 30x faster than raw events)
 
 ### Finding the Right Table - CRITICAL FOR PERFORMANCE
 
 **The Aggregation Hierarchy** (always start from top):
 
 ```
-Level 1: PRE-AGGREGATED TABLES (10-100x faster, 95-99% cost savings)
+Level 1: PRE-AGGREGATED TABLES (typically 10-100x faster, 95-99% cost savings)
   → active_users_aggregates (DAU/MAU by dimensions)
   → mobile_search_clients_daily (mobile search)
 
-Level 2: CLIENT-DAILY TABLES (5-10x faster)
-  → baseline_clients_daily (daily per-client baseline metrics)
-  → baseline_clients_last_seen (28-day windows, best for MAU/retention)
+Level 2: CLIENT-DAILY TABLES (typically 5-100x faster depending on query)
+  → baseline_clients_daily (daily per-client baseline metrics, ~100x for user counts)
+  → baseline_clients_last_seen (28-day windows, 28x faster for MAU)
 
-Level 3: RAW PING TABLES (slowest, most expensive)
+Level 3: RAW PING TABLES (slowest, most expensive - avoid for aggregations)
   → baseline (raw baseline pings)
   → metrics (raw metrics pings)
   → events (raw events pings - use events_stream instead!)
@@ -174,7 +174,7 @@ Level 3: RAW PING TABLES (slowest, most expensive)
 **If query needs DAU/MAU/WAU broken down by standard dimensions** (country, channel, OS, version):
 ```
 USE: mozdata.{product}_derived.active_users_aggregates_v3
-SPEEDUP: 100x faster, 99% cost reduction
+SPEEDUP: Typically 100x faster (can range 10-100x), 99% cost reduction
 EXAMPLE: DAU by country for Firefox Desktop
 ```
 
@@ -275,6 +275,24 @@ New Profiles: mozdata.{product}_derived.new_profile_clients
 - Analyzing sub-daily patterns (multiple pings per day)
 - Real-time/streaming analysis (very recent data)
 - Exploring brand new metrics not yet in aggregates
+
+### Important: Partition Field Types (DATE vs TIMESTAMP)
+
+**Aggregate tables use DATE fields:**
+```sql
+-- Tables: baseline_clients_daily, baseline_clients_last_seen, active_users_aggregates
+WHERE submission_date = '2025-10-13'
+WHERE submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+```
+
+**Raw ping tables use TIMESTAMP fields:**
+```sql
+-- Tables: baseline, metrics, events, events_stream
+WHERE DATE(submission_timestamp) = '2025-10-13'
+WHERE DATE(submission_timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+```
+
+**Rule:** If table name contains "clients_daily" or "clients_last_seen" or "aggregates", use `submission_date`. Otherwise, use `DATE(submission_timestamp)`.
 
 ### Glean Schema Structure
 
@@ -525,6 +543,59 @@ ORDER BY total_count DESC
 LIMIT 100
 ```
 
+### Critical Anti-Patterns to PREVENT
+
+These show common mistakes and their efficient alternatives:
+
+**❌ DON'T: Count DAU from raw baseline pings (typically 100x slower and more expensive)**
+```sql
+-- BAD: Scanning millions of individual pings
+SELECT COUNT(DISTINCT client_info.client_id)
+FROM mozdata.firefox_desktop.baseline
+WHERE DATE(submission_timestamp) = '2025-10-13'
+```
+
+**✅ DO: Use baseline_clients_daily (one row per client per day)**
+```sql
+-- GOOD: Pre-aggregated, ~$0.10 instead of ~$10
+SELECT COUNT(DISTINCT client_id)
+FROM mozdata.firefox_desktop.baseline_clients_daily
+WHERE submission_date = '2025-10-13'
+```
+
+**❌ DON'T: Scan 28 days for MAU (28x slower)**
+```sql
+-- BAD: Scanning 28 days of data
+SELECT COUNT(DISTINCT client_id)
+FROM mozdata.firefox_desktop.baseline_clients_daily
+WHERE submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 28 DAY)
+```
+
+**✅ DO: Use baseline_clients_last_seen with bit patterns (scans only 1 day)**
+```sql
+-- GOOD: 28-day window encoded in bits, ~$0.01 instead of ~$0.50
+SELECT COUNT(DISTINCT CASE WHEN days_seen_bits > 0 THEN client_id END)
+FROM mozdata.firefox_desktop.baseline_clients_last_seen
+WHERE submission_date = CURRENT_DATE()
+```
+
+**❌ DON'T: Query raw events with manual UNNEST (30x slower)**
+```sql
+-- BAD: Requires UNNEST, not optimized for event queries
+SELECT event.category, COUNT(*)
+FROM mozdata.firefox_desktop_stable.events_v1,
+  UNNEST(events) AS event
+WHERE DATE(submission_timestamp) = '2025-10-13'
+```
+
+**✅ DO: Use events_stream (already unnested and clustered)**
+```sql
+-- GOOD: Pre-flattened, clustered by event_category
+SELECT event_category, COUNT(*)
+FROM mozdata.firefox_desktop.events_stream
+WHERE DATE(submission_timestamp) = '2025-10-13'
+```
+
 ### Common Filters and Dimensions
 
 **Channel filtering:**
@@ -691,154 +762,36 @@ grouped by date. The query only counts clients where the metric value is > 0.
 
 1. **Identify what they want to measure** - DAU? Specific metric? Event? Search? Session analysis?
 
-2. **CRITICAL: Choose the MOST OPTIMIZED table available:**
+2. **Follow the "Decision Tree - ALWAYS CHECK AGGREGATES FIRST" section above** to select the optimal table
 
-   **For user counting (DAU/MAU/WAU):**
-   - If needs standard dimensions (country, channel, OS, version):
-     → **USE: `active_users_aggregates_v3`** (100x faster)
-   - If needs custom dimensions or client-level:
-     → For MAU/retention: **USE: `baseline_clients_last_seen`** (28x faster)
-     → For DAU only: **USE: `baseline_clients_daily`** (100x faster)
-   - **NEVER use raw `baseline` table for counting users!**
+3. **Use the "Query Templates - OPTIMIZED FOR PERFORMANCE" section** for SQL examples
 
-   **For events:**
-   - **ALWAYS USE: `events_stream`** (30x faster, no UNNEST needed)
-   - Events are in events ping → events_v1 table → processed to events_stream
-   - Raw events_v1 has ARRAY field, events_stream is already flattened
-
-   **For search metrics:**
-   - Mobile: **USE: `mobile_search_clients_daily_v2`** (45x faster)
-   - Desktop SERP: **USE: `serp_events_v2`**
-
-   **For session/engagement:**
-   - Daily aggregates: **USE: `baseline_clients_daily`**
-   - Individual sessions: Use raw `baseline` table
-
-   **For raw metrics from metrics ping:**
-   - Only when aggregate tables don't have the metric
-   - Use `{product}.metrics` table
-   - Remember: metrics ping does NOT contain events!
-
-3. **Determine metric type** - Counter? Labeled counter? Event?
-
-4. **Generate appropriate query template** - Use correct pattern for metric type
+4. **Critical rules to apply:**
+   - ALWAYS prefer aggregate tables (typically 10-100x faster, 95-99% cost savings)
+   - NEVER use raw baseline for user counting (use baseline_clients_daily or active_users_aggregates)
+   - ALWAYS use events_stream for events (never raw events_v1 which requires UNNEST)
+   - For mobile search, use mobile_search_clients_daily_v2
+   - For metrics from metrics ping, remember: metrics ping does NOT contain events!
 
 5. **Add required filters:**
-   - DATE(submission_timestamp) or submission_date with specific range
-   - sample_id if appropriate for development/testing
-   - Channel/country/OS if needed
+   - Partition filter: DATE(submission_timestamp) or submission_date with specific range
+   - sample_id for development/testing
+   - Channel/country/OS as needed
 
 6. **Include explanation with performance context:**
    - What the query does
-   - Why this table was chosen (e.g., "Using baseline_clients_daily because it's 100x faster than raw baseline for client counting")
-   - Estimated cost/time vs. raw table alternative
+   - Why this table was chosen (e.g., "Using baseline_clients_daily because it's typically 100x faster than raw baseline")
+   - Estimated cost/time savings
    - How to modify it (extend date range, add filters, etc.)
 
-### When users ask about DAU/MAU:
-
-1. **FIRST: Check if they need standard dimensions** (country, channel, OS, version)
-   - If YES → **Recommend `active_users_aggregates_v3`**
-     - "I'll use active_users_aggregates which is pre-computed and 100x faster than querying raw data"
-     - Show query with SUM(dau), SUM(mau), SUM(wau)
-   - If NO → Continue to step 2
-
-2. **For MAU/WAU/retention:**
-   - **Recommend `baseline_clients_last_seen`**
-   - "Using baseline_clients_last_seen with bit patterns - this scans only 1 day of data to calculate 28-day MAU, making it 28x faster"
-   - Explain bit patterns:
-     - `days_seen_bits > 0` for MAU (any activity in 28 days)
-     - `days_seen_bits & 127 > 0` for WAU (last 7 days)
-     - `days_seen_bits & 1 > 0` for DAU (today only)
-
-3. **For simple DAU only:**
-   - **Recommend `baseline_clients_daily`**
-   - "Using baseline_clients_daily which aggregates all pings per client per day - 100x faster than raw baseline table"
-   - COUNT(DISTINCT client_id) on one row per client per day
-
-4. **NEVER recommend querying raw baseline table for user counting** unless they explicitly need ping-level data
-
-### When users ask about events:
-
-1. **ALWAYS recommend `events_stream`** - Never the raw `events_v1` table
-   - "I'll use events_stream which has events already unnested and clustered by event_category - this is 30x faster than the raw events table"
-   - No UNNEST needed
-   - Clustered for efficient filtering
-
-2. **Clarify events vs metrics:**
-   - "Events are sent in the **events ping**, not the metrics ping"
-   - "The metrics ping explicitly excludes events - it only contains counters, booleans, strings, etc."
-   - Events flow: events ping → events_v1 (ARRAY) → events_stream_v1 (flattened)
-
-3. **Event query pattern:**
-```sql
--- Use event_category and event_name for filtering
-WHERE event_category = 'category'
-  AND event_name = 'name'
--- OR use combined event field
-WHERE event = 'category.name'
-```
-
-4. **Event extras:**
-   - Stored as JSON in `event_extra` field
-   - Use `JSON_VALUE(event_extra.field_name)` to extract
-
-### When users ask about search:
-
-1. **For mobile search:**
-   - **Recommend `mobile_search_clients_daily_v2`**
-   - "This table pre-aggregates search data by client, engine, and source - it's 45x faster than querying raw metrics"
-
-2. **For desktop SERP metrics:**
-   - **Recommend `serp_events_v2`**
-   - Includes impression tracking, ad metrics, engagement
-
-### Critical Anti-Patterns to PREVENT:
-
-**DON'T do this:**
-```sql
--- BAD: Counting DAU from raw baseline pings (100x slower, 100x more expensive!)
-SELECT COUNT(DISTINCT client_info.client_id)
-FROM mozdata.firefox_desktop.baseline
-WHERE DATE(submission_timestamp) = '2025-10-13'
-```
-**Instead:**
-```sql
--- GOOD: Use baseline_clients_daily
-SELECT COUNT(DISTINCT client_id)
-FROM mozdata.firefox_desktop.baseline_clients_daily
-WHERE submission_date = '2025-10-13'
-```
-
-**DON'T do this:**
-```sql
--- BAD: Scanning 28 days for MAU (28x slower!)
-SELECT COUNT(DISTINCT client_id)
-FROM mozdata.firefox_desktop.baseline_clients_daily
-WHERE submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 28 DAY)
-```
-**Instead:**
-```sql
--- GOOD: Use baseline_clients_last_seen with bit patterns (scans 1 day!)
-SELECT COUNT(DISTINCT CASE WHEN days_seen_bits > 0 THEN client_id END)
-FROM mozdata.firefox_desktop.baseline_clients_last_seen
-WHERE submission_date = CURRENT_DATE()
-```
-
-**DON'T do this:**
-```sql
--- BAD: Querying raw events with UNNEST (30x slower!)
-SELECT event.category, COUNT(*)
-FROM mozdata.firefox_desktop_stable.events_v1,
-  UNNEST(events) AS event
-WHERE DATE(submission_timestamp) = '2025-10-13'
-```
-**Instead:**
-```sql
--- GOOD: Use events_stream (already unnested, clustered!)
-SELECT event_category, COUNT(*)
-FROM mozdata.firefox_desktop.events_stream
-WHERE DATE(submission_timestamp) = '2025-10-13'
-```
+7. **Common query patterns and table mappings:**
+   - User says "DAU by country" → active_users_aggregates_v3 (pre-grouped)
+   - User says "count active users" → baseline_clients_daily (client-day level)
+   - User says "MAU" or "retention" → baseline_clients_last_seen (bit patterns)
+   - User says "events" or "funnel" → events_stream (pre-unnested)
+   - User says "search" + mobile → mobile_search_clients_daily_v2
+   - User says "session duration" → baseline_clients_daily (durations field)
+   - User says specific metric from metrics ping → {product}.metrics table
 
 ### When users need schema information:
 
