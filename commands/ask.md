@@ -25,7 +25,57 @@ You specialize in:
 - **bigquery-etl**: https://github.com/mozilla/bigquery-etl - Query definitions and UDFs
 - **bigquery-etl docs**: https://mozilla.github.io/bigquery-etl/ - Dataset browser and UDF reference
 
-**Important:** Use WebFetch to access ProbeInfo API and Glean Dictionary. Use DataHub MCP tools (mcp__dataHub__*) to query BigQuery metadata.
+**Important:** Use WebFetch to programmatically access ProbeInfo API for metric/ping data. Glean Dictionary is a JavaScript application (not accessible via WebFetch)—construct URLs and provide them to users for browsing. Use DataHub MCP tools (mcp__dataHub__*) to query BigQuery metadata.
+
+## Where to Find Information: Decision Tree
+
+**I need to find a specific metric or probe:**
+- ProbeInfo API → https://probeinfo.telemetry.mozilla.org/glean/{product}/metrics
+
+**I need to see BigQuery table schemas:**
+- **PRIMARY:** DataHub MCP → `mcp__dataHub__search` then `mcp__dataHub__get_entity`
+- **Fallback:** `bq show --schema` command
+- **Fallback** bigquery-etl repo (but not raw ping tables that are auto-generated, not in repo)
+
+**I need to understand ping scheduling/frequency:**
+- **PRIMARY:** ProbeInfo API → https://probeinfo.telemetry.mozilla.org/glean/{product}/pings
+- **Supplement:** Check `reasons` field and parse `description` for scheduling hints
+
+**I need query examples or derived table logic:**
+- **bigquery-etl repo:** https://github.com/mozilla/bigquery-etl
+- **bigquery-etl docs:** https://mozilla.github.io/bigquery-etl/
+- **Note:** Check `generated-sql` branch for dynamic queries
+
+**I need UDF (User-Defined Function) documentation:**
+- **mozfun reference:** https://mozilla.github.io/bigquery-etl/mozfun/
+- **Common UDFs:** `mozfun.hist.*`, `mozfun.map.*`, `mozfun.bits28.*`
+
+**I need to understand data platform concepts:**
+- **Mozilla Data Docs:** https://docs.telemetry.mozilla.org/
+- **Note:** Some pages have 404s; use search or table of contents
+
+**I need to find deprecated/obsolete tables:**
+- **Official list:** https://docs.telemetry.mozilla.org/datasets/obsolete.html
+- **Check table age:** DataHub MCP → look at last modified date
+- **Ask experts:** #data-help Slack channel
+
+**I need cross-product or multi-device analysis:**
+- **This guide:** See "Cross-Product Analysis & FxA Integration" section
+- **FxA tables:** `accounts_backend.users_services_daily`, `{product}.fx_accounts` pings
+
+**Quick reference - What's where:**
+
+| Information Type | Primary Source | Secondary Source |
+|-----------------|----------------|------------------|
+| Metric metadata | ProbeInfo API | - |
+| Ping metadata | ProbeInfo API | - |
+| Table schemas | DataHub MCP | BigQuery Console, `bq show` |
+| Raw ping tables | Auto-generated from Glean | NOT in bigquery-etl |
+| Derived table logic | bigquery-etl repo | - |
+| UDF reference | mozilla.github.io/bigquery-etl/mozfun/ | - |
+| Query examples | bigquery-etl docs | Official cookbooks |
+| Deprecation status | ProbeInfo (metrics only) | DataHub (check dates) |
+| Cross-product info | DataHub lineage | - |
 
 ## Probe Discovery Workflow
 
@@ -69,7 +119,44 @@ Example: `https://probeinfo.telemetry.mozilla.org/glean/firefox-desktop/metrics`
 
 **Important:** ProbeInfo API is static (no pagination/filtering). Download full JSON and parse locally.
 
+### Step 2B: Ping Discovery (Optional)
+
+If you need to understand which pings exist and their scheduling:
+
+**Get pings for a product:**
+```
+GET https://probeinfo.telemetry.mozilla.org/glean/{v1_name}/pings
+```
+Example: `https://probeinfo.telemetry.mozilla.org/glean/firefox-desktop/pings`
+
+**Ping metadata includes:**
+- `description` - Purpose and use case
+- `reasons` - When the ping is sent (triggers)
+- `metadata.ping_schedule` - Scheduled cadence (mobile products)
+- `moz_pipeline_metadata.bq_table` - BigQuery table name
+- `notification_emails` - Owner contacts
+
+**Common ping schedules:**
+- **baseline**: Daily for active users (on active, inactive, dirty_startup)
+- **metrics**: Daily, contains most counters/quantities
+- **events**: When event buffer fills (~500 events) or daily
+- **crash**: Immediate on crash (event-driven)
+- **fx-accounts**: Same cadence as baseline
+
+**Determining scheduling:**
+1. Check `metadata.ping_schedule` field (mobile products)
+2. Parse `description` for phrases like "sent at the same cadence as baseline"
+3. Examine `reasons` field:
+   - `active`, `inactive` → baseline cadence (daily)
+   - `crash`, `event_found` → event-driven (immediate)
+   - `component_init` → feature usage (sporadic)
+
+**Finding metrics' ping membership:**
+From Step 2 (metrics endpoint), check the `send_in_pings` field to see which pings contain the metric.
+
 ### Step 3: Direct Users to Glean Dictionary
+
+**Technical Note:** Glean Dictionary cannot be accessed programmatically via WebFetch because it's a client-side JavaScript application. Use ProbeInfo API for all programmatic data needs. Glean Dictionary URLs are for users to browse visually.
 
 **URL Pattern:**
 ```
@@ -94,6 +181,14 @@ https://dictionary.telemetry.mozilla.org/apps/firefox_desktop/metrics/a11y_hcm_f
 - **"Generate SQL" button** - Creates ready-to-run BigQuery query
 - Links to GLAM, Looker, Data Catalog
 - Source code references
+
+**What Glean Dictionary provides that ProbeInfo API doesn't:**
+- Visual BigQuery query generator ("Generate SQL" button)
+- Interactive schema browser with copy buttons
+- Direct links to data analysis tools (GLAM, Looker, Data Catalog)
+- GitHub source code navigation
+
+All metadata (description, type, send_in_pings, bugs) is available from ProbeInfo API.
 
 ### Step 4: Understanding Metric Types
 
@@ -129,6 +224,26 @@ Mozilla uses two main BigQuery projects:
 - Raw stable tables and derived datasets
 - Restricted access (data engineering)
 - Contains versioned tables (e.g., `clients_daily_v6`)
+
+### Deprecated & Obsolete Tables
+
+**WARNING: Avoid these tables—use modern replacements:**
+
+| Deprecated | Status | Replacement | Notes |
+|-----------|--------|-------------|-------|
+| `mozdata.telemetry.account_ecosystem` | Obsolete | `firefox_desktop.fx_accounts` | Ecosystem telemetry deprecated 2021 |
+| `mozdata.firefox_accounts.*` | Deprecated | `mozdata.accounts_backend.*` | Switched to Glean-based tables |
+| `mozdata.telemetry.main_summary` | Legacy | `telemetry.clients_daily`, `firefox_desktop.baseline_clients_daily` | Legacy telemetry pre-Glean |
+| `org_mozilla_fennec_aurora.*` | Unmaintained | `fenix.*` | Old Firefox Android build |
+| `org_mozilla_ios_fennec.*` | Unmaintained | `firefox_ios.*` | Old Firefox iOS build |
+
+**Full deprecated datasets list:** https://docs.telemetry.mozilla.org/datasets/obsolete.html
+
+**Detecting deprecated tables:**
+1. Check DataHub for last modification date
+2. If last updated >6 months ago with no activity, likely deprecated
+3. Search for modern equivalent: `mcp__dataHub__search(query="/q {product_name}")`
+4. Consult official docs or ask in #data-help Slack channel
 
 ### Table Naming Convention
 
@@ -690,6 +805,58 @@ SELECT mozfun.bits28.active_in_range(days_seen_bits, start_offset, num_days)
 - Many queries are generated dynamically and only exist in this branch
 - Main branch contains query generators, not final SQL
 
+## Cross-Product Analysis & Firefox Accounts (FxA) Integration
+
+### CRITICAL: Client IDs Are Product-Specific
+
+**WARNING: You CANNOT join across products by client_id!**
+
+- Each product (Desktop, Android, iOS) generates its own independent client_id
+- A single user has different client_ids on different products
+- client_id namespaces are completely separate—no overlap or correlation
+- Joining Desktop and Android by client_id produces meaningless results
+
+**Example of INCORRECT approach:**
+```sql
+-- WRONG - This will give nonsense results!
+SELECT d.client_id, a.client_id
+FROM firefox_desktop.baseline_clients_daily d
+JOIN fenix.baseline_clients_daily a
+  ON d.client_id = a.client_id  -- These are DIFFERENT namespaces!
+```
+
+**For cross-product/multi-device analysis:** Use Firefox Accounts (FxA) identifiers instead.
+
+### Firefox Accounts (FxA) Analysis
+
+**Key tables:**
+- `mozdata.accounts_backend.users_services_daily` - Current FxA usage data
+- `mozdata.accounts_backend.events_stream` - Current FxA events
+- **DEPRECATED:** `mozdata.firefox_accounts.*` (use accounts_backend instead)
+- **OBSOLETE:** `mozdata.telemetry.account_ecosystem` (ecosystem telemetry deprecated 2021)
+
+**Linking via fx_accounts ping:**
+
+The `fx_accounts` ping bridges product client_id with FxA user ID:
+
+| Product | Table | FxA User ID Field | Notes |
+|---------|-------|-------------------|-------|
+| Desktop | `firefox_desktop.fx_accounts` | `metrics.string.client_association_uid` | Standard field |
+| Android | `fenix.fx_accounts` | `metrics.string.client_association_uid` | Standard field |
+| iOS | `firefox_ios.fx_accounts` | `metrics.string.user_client_association_uid` | Different name! |
+
+**fx_accounts ping characteristics:**
+- Sent at baseline cadence (daily for active users)
+- Not sent every session—use 7-28 day lookback for better coverage
+- Only contains FxA UID when user is signed into FxA
+- Access is restricted, 30 days retention
+
+**Key principles:**
+- Use FxA user ID as linking key across products (NOT client_id)
+- fx_accounts ping sent at baseline cadence (not every session)
+- Use 28-day lookback for multi-device identification
+
+
 ## Complete Workflow Example
 
 **Scenario:** User wants to know how many Firefox Desktop users clicked on the accessibility high contrast mode button.
@@ -795,13 +962,40 @@ grouped by date. The query only counts clients where the metric value is > 0.
 
 ### When users need schema information:
 
-1. **Use DataHub MCP tools** to query actual schemas:
+**ALWAYS use DataHub MCP as your PRIMARY tool for schema discovery.**
+
+1. **First: Try DataHub MCP tools:**
    ```
-   mcp__dataHub__search - Find tables
-   mcp__dataHub__get_entity - Get table details and schema
+   mcp__dataHub__search - Find tables by name/keywords
+   mcp__dataHub__get_entity - Get detailed schema, metadata, lineage
    ```
-2. **Explain structure** - Show how metrics.{type}.{name} works
-3. **Point to documentation** - Glean Dictionary shows schema info per metric
+
+2. **DataHub provides:**
+   - Complete table schemas with field types
+   - Column descriptions and documentation
+   - Lineage (upstream/downstream dependencies)
+   - Usage statistics and ownership
+   - Last modified dates (useful for detecting deprecated tables)
+
+3. **If DataHub unavailable or insufficient:**
+   - Use `bq show --schema mozdata:{dataset}.{table}`
+
+4. **For derived table query logic:**
+   - Check bigquery-etl repo: https://github.com/mozilla/bigquery-etl
+   - Raw ping tables are NOT in repo (auto-generated from Glean schemas)
+
+**Efficient workflow example:**
+```python
+# Find tables
+results = mcp__dataHub__search(query="/q fx_accounts", filters={"entity_type": ["dataset"]})
+
+# Get schema details
+for result in results:
+    entity = mcp__dataHub__get_entity(urn=result['urn'])
+    # Extract schema, check last_modified, examine lineage
+```
+
+**Common mistake:** Searching bigquery-etl repo for raw ping table definitions. Raw pings are auto-generated from Glean YAML files in product repos, not stored in bigquery-etl.
 
 ### General Guidelines:
 
