@@ -1,8 +1,8 @@
 # Mozdata Plugin for Claude Code
 
-A Claude Code plugin for discovering Mozilla telemetry probes and writing BigQuery queries for Glean telemetry data. Written by Claude Code.
+A Claude Code plugin for discovering Mozilla telemetry probes and writing BigQuery queries for Glean telemetry data.
 
-__This plugin is in early development.__
+__This plugin is in development. Feel free to use and report issues.__
 
 ## What It Does
 
@@ -27,13 +27,64 @@ Example usage:
 /mozdata:ask Write a query for the a11y_hcm_foreground metric
 ```
 
+### Skills (Auto-Activated)
+
+The plugin includes two Skills that Claude can automatically invoke when relevant:
+
+**mozilla-probe-discovery** - Activated when you ask about:
+- Finding metrics or probes in Mozilla products
+- Glean telemetry data
+- Accessibility probes, search metrics, etc.
+
+**mozilla-query-writing** - Activated when you ask about:
+- Firefox DAU/MAU queries
+- BigQuery Mozilla telemetry
+- baseline_clients_*, events_stream tables
+- User counts or data analysis
+
+Skills activate automatically based on your questions - no need to use the slash command.
+
+## Architecture
+
+```
+mozdata-claude-plugin/
+├── knowledge/                 # Shared knowledge modules
+│   ├── architecture.md        # Data platform architecture
+│   ├── metrics.md             # Metric/probe discovery
+│   ├── data-catalog.md        # Table discovery
+│   └── query-writing.md       # Query best practices
+├── commands/
+│   └── ask.md                 # Slash command (refs @knowledge/*)
+├── skills/
+│   ├── probe-discovery/
+│   │   └── SKILL.md           # Auto-activated for probe questions
+│   └── query-writing/
+│       └── SKILL.md           # Auto-activated for query questions
+├── .claude-plugin/
+│   └── plugin.json
+└── README.md
+```
+
+### Knowledge Modules
+
+The plugin's intelligence is organized into four shared knowledge modules:
+
+| Module | Purpose |
+|--------|---------|
+| `architecture.md` | Data platform structure, Glean schema, gotchas |
+| `metrics.md` | ProbeInfo API, Glean Dictionary, metric types |
+| `data-catalog.md` | Table selection, aggregation hierarchy |
+| `query-writing.md` | Required filters, templates, anti-patterns |
+
+Both the slash command and Skills reference these modules for consistent knowledge.
+
 ## Key Knowledge
 
 The plugin understands:
 - **Glean Dictionary** structure and navigation
 - **ProbeInfo API** endpoints and data formats
 - **BigQuery conventions** (mozdata dataset, submission_date filtering, sample_id usage)
-- **Query best practices** (required filters, performance optimization)
+- **Query best practices** (aggregate tables, required filters, performance optimization)
 - **Mozilla data platform** architecture and resources
 
 ## Resources Used
@@ -96,6 +147,8 @@ Restart Claude Code for the plugin to load.
 
 ## Usage
 
+### Using the Slash Command
+
 Start a conversation with `/mozdata:ask` followed by your question:
 
 ```
@@ -103,6 +156,15 @@ Start a conversation with `/mozdata:ask` followed by your question:
 ```
 
 Continue the conversation naturally - no need to prefix subsequent messages.
+
+### Using Skills (Automatic)
+
+Just ask questions naturally - Claude will automatically use the appropriate Skill:
+
+```
+How do I find probes for accessibility in Firefox Desktop?
+Write a query for Firefox Android DAU by country
+```
 
 ### Example chat
 
@@ -159,54 +221,8 @@ Continue the conversation naturally - no need to prefix subsequent messages.
   ORDER BY
     unique_clients DESC
   LIMIT 20
-
-  Query Explanation
-
-  Why this table?
-  - baseline_clients_daily is pre-aggregated at the client-day level (one row per client per day)
-  - Much faster than querying raw baseline pings (~100x faster)
-  - Contains all device metadata we need
-
-  What it does:
-  - Counts unique clients per device model/manufacturer combination
-  - Filters to Japan (country = 'JP')
-  - Shows percentage of total clients for each device
-  - Limited to last 7 days (adjust INTERVAL 7 DAY as needed)
-
-  Key fields:
-  - unique_clients - Number of distinct users on each device
-  - client_days - Total client-days of activity (accounts for multi-day usage)
-  - pct_of_clients - Percentage share of each device
-
-  Alternative: By Manufacturer Only
-
-  If you want just the top manufacturers (not specific models):
-
-  -- Top device manufacturers in Japan
-  SELECT
-    device_manufacturer,
-    COUNT(DISTINCT client_id) AS unique_clients,
-    ROUND(COUNT(DISTINCT client_id) * 100.0 / SUM(COUNT(DISTINCT client_id)) OVER (), 2) AS pct_of_clients
-  FROM
-    mozdata.fenix.baseline_clients_daily
-  WHERE
-    submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
-    AND country = 'JP'
-    AND device_manufacturer IS NOT NULL
-  GROUP BY
-    device_manufacturer
-  ORDER BY
-    unique_clients DESC
-
-  Notes
-
-  - Fenix includes all Firefox Android channels (release, beta, nightly)
-  - Device data comes from Android system info at the client level
-  - Adjust the date range by changing INTERVAL 7 DAY to your preferred window
-  - Use sample_id = 0 if you want to test with 1% sample first
 ```
 
 ## License
 
 MPL-2.0
-
