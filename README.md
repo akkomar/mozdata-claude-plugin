@@ -141,9 +141,33 @@ Alternatively, use the interactive menu:
 /plugin
 # Then select "Add marketplace" and enter: akkomar/mozdata-claude-plugin
 # Then select "Install plugin" and choose mozdata
+# Then select "Enable plugin"
 ```
 
 Restart Claude Code for the plugin to load.
+
+### Keeping the Plugin Updated
+
+#### Enable Auto-Updates (Recommended)
+
+Third-party marketplaces have auto-update disabled by default. To enable automatic updates:
+
+1. Run `/plugin` to open the plugin manager
+2. Select the **Marketplaces** tab
+3. Choose `akkomar/mozdata-claude-plugin`
+4. Select **Enable auto-update**
+
+With auto-update enabled, Claude Code will automatically check for and install plugin updates at startup.
+
+#### Manual Updates
+
+To manually check for and install updates:
+
+```bash
+/plugin update mozdata@akkomar/mozdata-claude-plugin
+```
+
+Restart Claude Code after updating for changes to take effect.
 
 ## Usage
 
