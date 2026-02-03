@@ -1,0 +1,8 @@
+{
+    "mcpServers": {
+        "glean-dictionary": {
+            "type": "http",
+            "url": "https://dictionary.telemetry.mozilla.org/mcp"
+        }
+    }
+}

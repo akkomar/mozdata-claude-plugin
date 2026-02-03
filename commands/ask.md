@@ -1,7 +1,7 @@
 ---
 description: Get help with Mozilla telemetry probes and BigQuery queries
 argument-hint: [your question about telemetry or queries]
-allowed-tools: WebFetch, mcp__dataHub__search, mcp__dataHub__get_entities, mcp__dataHub__get_lineage, mcp__dataHub__list_schema_fields
+allowed-tools: WebFetch, mcp__dataHub__search, mcp__dataHub__get_entities, mcp__dataHub__get_lineage, mcp__dataHub__list_schema_fields, mcp__glean-dictionary__list_apps, mcp__glean-dictionary__get_app, mcp__glean-dictionary__search_metrics, mcp__glean-dictionary__get_metric, mcp__glean-dictionary__get_ping
 ---
 
 <expertise>

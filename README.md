@@ -62,6 +62,7 @@ mozdata-claude-plugin/
 │       └── SKILL.md           # Auto-activated for query questions
 ├── .claude-plugin/
 │   └── plugin.json
+├── .mcp.json                  # Bundled MCP servers (Glean Dictionary)
 └── README.md
 ```
 
@@ -93,6 +94,7 @@ The plugin understands:
 - [ProbeInfo API](https://probeinfo.telemetry.mozilla.org/) - Programmatic probe metadata
 - [Mozilla Data Docs](https://docs.telemetry.mozilla.org/) - Data platform documentation
 - [bigquery-etl](https://github.com/mozilla/bigquery-etl) - Query definitions and aggregates
+- Glean Dictionary MCP - Direct access to Glean metadata (bundled with plugin)
 - DataHub MCP - BigQuery schema metadata (requires separate setup)
 
 ## Setup

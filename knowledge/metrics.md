@@ -1,5 +1,11 @@
 # Metric/Probe Discovery
 
+## Glean Dictionary MCP
+
+The plugin bundles the Glean Dictionary MCP server (`mcp__glean-dictionary__*` tools). **Prefer using these tools over WebFetch to ProbeInfo API** when available.
+
+App names use snake_case (e.g., `firefox_desktop`, `fenix`, `firefox_ios`).
+
 ## Product Naming Conventions
 
 Common Mozilla products and their naming conventions:
