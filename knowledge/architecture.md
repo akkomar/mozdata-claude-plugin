@@ -12,7 +12,7 @@
 - **bigquery-etl**: https://github.com/mozilla/bigquery-etl - Query definitions and UDFs
 - **bigquery-etl docs**: https://mozilla.github.io/bigquery-etl/ - Dataset browser and UDF reference
 
-**Important:** Use WebFetch to programmatically access ProbeInfo API for metric/ping data. Glean Dictionary is a JavaScript application (not accessible via WebFetch)—construct URLs and provide them to users for browsing. Use DataHub MCP tools (mcp__dataHub__*) to query BigQuery metadata.
+**Important:** Use Glean Dictionary MCP tools (`mcp__glean-dictionary__*`) for metric/ping discovery - they provide server-side filtering and pagination. Use DataHub MCP tools (`mcp__dataHub__*`) for BigQuery schema metadata. Provide Glean Dictionary URLs for users to browse visually.
 
 ## BigQuery Dataset Structure
 

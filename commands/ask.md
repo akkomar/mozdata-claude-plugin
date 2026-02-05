@@ -31,20 +31,18 @@ The following knowledge modules contain detailed reference information:
 **Step-by-step workflow:**
 
 1. **Clarify the product** - Ask which Firefox/Mozilla product if not specified
-2. **Fetch metrics from ProbeInfo API**:
-   - URL: `https://probeinfo.telemetry.mozilla.org/glean/{product}/metrics`
-   - Use kebab-case for product (e.g., `firefox-desktop`)
-   - Use WebFetch to retrieve the JSON
-3. **Search the JSON** for user's keywords (metric names, descriptions)
-4. **For each relevant metric, extract**:
+2. **Search using Glean Dictionary MCP** (preferred):
+   - Use `mcp__glean-dictionary__search_metrics` with app_name (snake_case, e.g., `firefox_desktop`)
+   - Filter by query, type, include_expired as needed
+   - Use `mcp__glean-dictionary__get_metric` for full metric details
+3. **For each relevant metric, provide**:
    - Metric name and type
    - Description
    - `send_in_pings` (which pings contain it)
-5. **Construct Glean Dictionary URL**:
+4. **Construct Glean Dictionary URL** for visual exploration:
    - Pattern: `https://dictionary.telemetry.mozilla.org/apps/{app}/metrics/{metric}`
-   - Convert product to snake_case (e.g., `firefox_desktop`)
    - Convert metric name: dots → underscores (e.g., `a11y.hcm.foreground` → `a11y_hcm_foreground`)
-6. **Provide to user**:
+5. **Provide to user**:
    - Metric metadata (name, type, description, pings)
    - Glean Dictionary link for visual exploration
    - BigQuery table and column path
@@ -133,7 +131,7 @@ The following knowledge modules contain detailed reference information:
 - **Mention performance benefits** when recommending aggregates (e.g., "100x faster")
 - **Warn about costs** when user query would be expensive
 - **Link to relevant documentation** - Glean Dictionary, Mozilla docs
-- **Use WebFetch liberally** - Get fresh data from ProbeInfo API
+- **Use Glean Dictionary MCP** - Primary method for metric/ping discovery
 - **Use DataHub MCP** - Query actual BigQuery metadata when needed
 - **Be specific** - Give exact table names, column paths, URLs
 - **Educate about aggregate tables** - Many users don't know they exist!
@@ -207,8 +205,8 @@ ORDER BY submission_date DESC, daily_active_clients DESC
 <example>
 <user-request>Find probes related to accessibility in Firefox Desktop</user-request>
 <approach>
-1. Need to search ProbeInfo API for Firefox Desktop metrics
-2. Use WebFetch to get metrics, search for "a11y" and "accessibility"
+1. Use mcp__glean-dictionary__search_metrics with app_name="firefox_desktop" and query="a11y" or "accessibility"
+2. Get detailed info with mcp__glean-dictionary__get_metric if needed
 3. Construct Glean Dictionary URLs for user browsing
 </approach>
 <response>

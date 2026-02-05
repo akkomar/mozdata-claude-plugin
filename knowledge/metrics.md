@@ -1,10 +1,8 @@
 # Metric/Probe Discovery
 
-## Glean Dictionary MCP
+## Glean Dictionary MCP (Primary Method)
 
-The plugin bundles the Glean Dictionary MCP server (`mcp__glean-dictionary__*` tools). **Prefer using these tools over WebFetch to ProbeInfo API** when available.
-
-App names use snake_case (e.g., `firefox_desktop`, `fenix`, `firefox_ios`).
+The plugin bundles the Glean Dictionary MCP server (`mcp__glean-dictionary__*` tools). **Always use these tools first** - they provide server-side filtering and pagination instead of returning raw 6MB JSON dumps.
 
 ## Product Naming Conventions
 
@@ -19,12 +17,14 @@ Common Mozilla products and their naming conventions:
 | Focus iOS | `focus-ios` | `focus_ios` | `focus_ios` |
 | Thunderbird | `thunderbird-desktop` | `thunderbird_desktop` | `thunderbird_desktop` |
 
-**Naming rules:**
-- **ProbeInfo API**: Use kebab-case (e.g., `firefox-desktop`)
-- **Glean Dictionary URLs**: Use snake_case (e.g., `firefox_desktop`)
-- **BigQuery tables**: Use snake_case (e.g., `firefox_desktop.metrics`)
+Naming rules:
+- ProbeInfo API: Use kebab-case (e.g., `firefox-desktop`)
+- Glean Dictionary URLs: Use snake_case (e.g., `firefox_desktop`)
+- BigQuery tables: Use snake_case (e.g., `firefox_desktop.metrics`)
 
-## ProbeInfo API Usage
+## ProbeInfo API (Fallback)
+
+Use ProbeInfo API via WebFetch only when MCP tools don't provide what you need (e.g., raw JSON, history arrays, bug links). Note: Returns full JSON without filtering.
 
 **List all products:**
 ```
@@ -78,7 +78,7 @@ Example: `https://probeinfo.telemetry.mozilla.org/glean/firefox-desktop/pings`
 
 ## Glean Dictionary URLs
 
-**Technical Note:** Glean Dictionary cannot be accessed programmatically via WebFetch because it's a client-side JavaScript application. Use ProbeInfo API for all programmatic data needs. Glean Dictionary URLs are for users to browse visually.
+Provide these URLs for users to browse visually in their browser.
 
 **URL Pattern:**
 ```
@@ -124,8 +124,7 @@ Glean metrics have different types that affect how they're stored in BigQuery:
 
 ## Where to Find Information: Quick Reference
 
-| Information Type | Primary Source | Secondary Source |
-|-----------------|----------------|------------------|
-| Metric metadata | ProbeInfo API | - |
-| Ping metadata | ProbeInfo API | - |
-| Deprecation status | ProbeInfo (metrics only) | DataHub (check dates) |
+| Information Type | Primary Source | Fallback |
+|-----------------|----------------|----------|
+| Metric/ping metadata | Glean Dictionary MCP tools | ProbeInfo API (raw JSON) |
+| Deprecation status | MCP tools (checks expiry) | DataHub (check dates) |

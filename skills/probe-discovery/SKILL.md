@@ -18,33 +18,65 @@ You help users find telemetry probes across Mozilla products.
 
 ## Workflow
 
-1. **Identify product** - Ask if not specified. Common products:
-   - Firefox Desktop: `firefox-desktop` (API) / `firefox_desktop` (BigQuery)
-   - Firefox Android: `fenix` (API) / `fenix` (BigQuery)
-   - Firefox iOS: `firefox-ios` (API) / `firefox_ios` (BigQuery)
+### 1. Identify Product
 
-2. **Fetch from ProbeInfo API**:
-   - URL: `https://probeinfo.telemetry.mozilla.org/glean/{product}/metrics`
-   - Use kebab-case for product name in URL
-   - Use WebFetch to retrieve JSON
+Ask if not specified. Use **snake_case** for all MCP tools:
 
-3. **Search JSON** for user's keywords in metric names and descriptions
+| Product | MCP app_name | BigQuery dataset |
+|---------|--------------|------------------|
+| Firefox Desktop | `firefox_desktop` | `firefox_desktop` |
+| Firefox Android | `fenix` | `fenix` |
+| Firefox iOS | `firefox_ios` | `firefox_ios` |
 
-4. **For each relevant metric, extract**:
-   - Metric name and type
-   - Description
-   - `send_in_pings` (which pings contain it)
+Use `mcp__glean-dictionary__list_apps` if unsure which apps exist.
 
-5. **Construct Glean Dictionary URL**:
-   - Pattern: `https://dictionary.telemetry.mozilla.org/apps/{app}/metrics/{metric}`
-   - Convert product to snake_case (e.g., `firefox_desktop`)
-   - Transform metric name: dots → underscores (`a11y.hcm.foreground` → `a11y_hcm_foreground`)
+### 2. Search for Metrics (Primary Method)
 
-6. **Provide to user**:
-   - Metric metadata (name, type, description, pings)
-   - Glean Dictionary link for visual exploration
-   - BigQuery table and column path
-   - Example query if requested
+Use `mcp__glean-dictionary__search_metrics` - this is the **preferred** approach:
+
+```
+app_name: "firefox_desktop"    # Required - snake_case
+query: "search"                # Optional - searches name + description
+type: "counter"                # Optional - filter by metric type
+include_expired: false         # Optional - default excludes expired
+limit: 50                      # Optional - max results per page
+offset: 0                      # Optional - for pagination
+```
+
+This returns filtered, paginated results instead of raw 6MB JSON dumps.
+
+### 3. Get Detailed Metric Info
+
+Use `mcp__glean-dictionary__get_metric` for full definition:
+
+```
+app_name: "firefox_desktop"
+metric_name: "browser.engagement.active_ticks"
+```
+
+### 4. Explore App or Ping Structure
+
+- `mcp__glean-dictionary__get_app` - Overview: metrics count, available pings, tags
+- `mcp__glean-dictionary__get_ping` - Ping details and all metrics it contains
+
+### 5. Construct Glean Dictionary URL
+
+For visual exploration, provide links:
+- Pattern: `https://dictionary.telemetry.mozilla.org/apps/{app}/metrics/{metric}`
+- Transform metric name: dots → underscores (`a11y.hcm.foreground` → `a11y_hcm_foreground`)
+
+### 6. Provide to User
+
+- Metric metadata (name, type, description, pings)
+- Glean Dictionary link for visual exploration
+- BigQuery table and column path
+- Example query if requested
+
+### Fallback: ProbeInfo API
+
+Only use WebFetch to ProbeInfo API when you need raw JSON or data not available via MCP:
+- URL: `https://probeinfo.telemetry.mozilla.org/glean/{product}/metrics`
+- Use **kebab-case** for product name in URL (e.g., `firefox-desktop`)
 
 ## Response Format
 
