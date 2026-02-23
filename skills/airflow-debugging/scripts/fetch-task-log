@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Fetch Airflow task logs from GCS remote logging bucket.
+
+Examples:
+    # Fetch log by specifying all parameters
+    ./scripts/fetch-task-log bqetl_main_summary telemetry_derived__clients_daily__v6 scheduled__2025-01-30T00:00:00+00:00
+
+    # Fetch specific attempt
+    ./scripts/fetch-task-log bqetl_main_summary telemetry_derived__clients_daily__v6 scheduled__2025-01-30T00:00:00+00:00 --attempt 2
+
+    # List available runs for a DAG
+    ./scripts/fetch-task-log bqetl_main_summary --list-runs
+
+    # List tasks in a specific run
+    ./scripts/fetch-task-log bqetl_main_summary --list-tasks --run-id scheduled__2025-01-30T00:00:00+00:00
+"""
+
+import argparse
+import subprocess
+import sys
+import re
+
+GCS_BUCKET = "gs://airflow-remote-logs-prod-prod"
+
+
+def run_gsutil(args: list[str], capture: bool = True) -> subprocess.CompletedProcess:
+    """Run a gsutil command."""
+    cmd = ['gsutil'] + args
+    if capture:
+        return subprocess.run(cmd, capture_output=True, text=True)
+    else:
+        return subprocess.run(cmd)
+
+
+def list_runs(dag_id: str, limit: int = 10) -> list[str]:
+    """List available runs for a DAG."""
+    path = f"{GCS_BUCKET}/dag_id={dag_id}/"
+    result = run_gsutil(['ls', path])
+
+    if result.returncode != 0:
+        if 'matched no objects' in result.stderr or 'CommandException' in result.stderr:
+            print(f"No runs found for DAG: {dag_id}", file=sys.stderr)
+            return []
+        print(f"Error listing runs: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    runs = []
+    for line in result.stdout.strip().split('\n'):
+        if not line:
+            continue
+        # Extract run_id from path
+        match = re.search(r'run_id=([^/]+)', line)
+        if match:
+            runs.append(match.group(1))
+
+    # Sort by date (most recent first) and limit
+    runs.sort(reverse=True)
+    return runs[:limit]
+
+
+def list_tasks(dag_id: str, run_id: str) -> list[str]:
+    """List tasks in a specific run."""
+    path = f"{GCS_BUCKET}/dag_id={dag_id}/run_id={run_id}/"
+    result = run_gsutil(['ls', path])
+
+    if result.returncode != 0:
+        print(f"Error listing tasks: {result.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    tasks = []
+    for line in result.stdout.strip().split('\n'):
+        if not line:
+            continue
+        # Extract task_id from path
+        match = re.search(r'task_id=([^/]+)', line)
+        if match:
+            tasks.append(match.group(1))
+
+    return sorted(tasks)
+
+
+def list_attempts(dag_id: str, run_id: str, task_id: str) -> list[int]:
+    """List available attempts for a task."""
+    path = f"{GCS_BUCKET}/dag_id={dag_id}/run_id={run_id}/task_id={task_id}/"
+    result = run_gsutil(['ls', path])
+
+    if result.returncode != 0:
+        return []
+
+    attempts = []
+    for line in result.stdout.strip().split('\n'):
+        if not line:
+            continue
+        match = re.search(r'attempt=(\d+)\.log', line)
+        if match:
+            attempts.append(int(match.group(1)))
+
+    return sorted(attempts)
+
+
+def fetch_log(dag_id: str, task_id: str, run_id: str, attempt: int = 1, tail: int = None) -> None:
+    """Fetch and display a task log."""
+    path = f"{GCS_BUCKET}/dag_id={dag_id}/run_id={run_id}/task_id={task_id}/attempt={attempt}.log"
+
+    print(f"Fetching: {path}\n", file=sys.stderr)
+    print("=" * 80, file=sys.stderr)
+
+    if tail:
+        # Use gsutil cat and pipe through tail
+        result = run_gsutil(['cat', path])
+        if result.returncode != 0:
+            print(f"Error fetching log: {result.stderr}", file=sys.stderr)
+            sys.exit(1)
+        lines = result.stdout.strip().split('\n')
+        print('\n'.join(lines[-tail:]))
+    else:
+        # Stream directly to stdout
+        run_gsutil(['cat', path], capture=False)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Fetch Airflow task logs from GCS.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument(
+        'dag_id',
+        help='The DAG ID'
+    )
+    parser.add_argument(
+        'task_id',
+        nargs='?',
+        help='The task ID'
+    )
+    parser.add_argument(
+        'run_id',
+        nargs='?',
+        help='The run ID (e.g., scheduled__2025-01-30T00:00:00+00:00)'
+    )
+    parser.add_argument(
+        '--attempt', '-a',
+        type=int,
+        default=1,
+        help='Attempt number (default: 1)'
+    )
+    parser.add_argument(
+        '--tail', '-t',
+        type=int,
+        help='Show only the last N lines'
+    )
+    parser.add_argument(
+        '--list-runs', '-r',
+        action='store_true',
+        help='List available runs for the DAG'
+    )
+    parser.add_argument(
+        '--list-tasks', '-T',
+        action='store_true',
+        help='List tasks in a run (requires --run-id or run_id argument)'
+    )
+    parser.add_argument(
+        '--run-id',
+        dest='run_id_opt',
+        help='Run ID for --list-tasks'
+    )
+    parser.add_argument(
+        '--limit', '-l',
+        type=int,
+        default=10,
+        help='Limit number of results for --list-runs (default: 10)'
+    )
+
+    args = parser.parse_args()
+
+    # List runs mode
+    if args.list_runs:
+        runs = list_runs(args.dag_id, limit=args.limit)
+        if runs:
+            print(f"Recent runs for {args.dag_id}:\n")
+            for run in runs:
+                print(f"  {run}")
+        return
+
+    # List tasks mode
+    if args.list_tasks:
+        run_id = args.run_id_opt or args.run_id
+        if not run_id:
+            print("Error: --list-tasks requires --run-id or run_id argument", file=sys.stderr)
+            sys.exit(1)
+        tasks = list_tasks(args.dag_id, run_id)
+        if tasks:
+            print(f"Tasks in {args.dag_id} / {run_id}:\n")
+            for task in tasks:
+                print(f"  {task}")
+        return
+
+    # Fetch log mode - need all arguments
+    if not args.task_id or not args.run_id:
+        # Try to help the user
+        print("Error: task_id and run_id are required to fetch a log.\n", file=sys.stderr)
+        print("To explore available runs and tasks:", file=sys.stderr)
+        print(f"  {sys.argv[0]} {args.dag_id} --list-runs", file=sys.stderr)
+        print(f"  {sys.argv[0]} {args.dag_id} --list-tasks --run-id <run_id>", file=sys.stderr)
+        sys.exit(1)
+
+    # Check available attempts
+    attempts = list_attempts(args.dag_id, args.run_id, args.task_id)
+    if attempts and args.attempt not in attempts:
+        print(f"Warning: Attempt {args.attempt} not found. Available attempts: {attempts}", file=sys.stderr)
+        if attempts:
+            args.attempt = max(attempts)
+            print(f"Using attempt {args.attempt}", file=sys.stderr)
+
+    fetch_log(args.dag_id, args.task_id, args.run_id, args.attempt, args.tail)
+
+
+if __name__ == '__main__':
+    main()

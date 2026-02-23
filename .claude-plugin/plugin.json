@@ -1,13 +1,13 @@
 {
     "name": "mozdata",
-    "description": "Mozilla telemetry discovery and BigQuery query assistance for Glean telemetry data",
-    "version": "0.0.7",
+    "description": "Mozilla data engineering toolkit: telemetry discovery, BigQuery queries, and Airflow debugging",
+    "version": "0.0.8",
     "author": {
         "name": "akomar"
     },
     "homepage": "https://github.com/akkomar/mozdata-claude-plugin",
     "repository": "https://github.com/akkomar/mozdata-claude-plugin",
     "license": "MPL-2.0",
-    "keywords": ["mozilla", "telemetry", "bigquery", "glean", "data-analysis"],
+    "keywords": ["mozilla", "telemetry", "bigquery", "glean", "data-analysis", "airflow"],
     "commands": ["./commands/"]
 }
