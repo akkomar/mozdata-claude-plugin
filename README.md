@@ -1,6 +1,6 @@
 # Mozdata Plugin for Claude Code
 
-A Claude Code plugin for discovering Mozilla telemetry probes and writing BigQuery queries for Glean telemetry data.
+A Claude Code plugin for Mozilla data engineering: telemetry probe discovery, BigQuery query writing, and Airflow DAG failure debugging.
 
 __This plugin is in development. Feel free to use and report issues.__
 
@@ -10,6 +10,7 @@ This plugin helps you:
 - **Discover telemetry probes** - Find Glean metrics across Mozilla products (Firefox Desktop, Android, etc.)
 - **Write BigQuery queries** - Generate efficient queries for Mozilla telemetry data
 - **Navigate data resources** - Access Glean Dictionary, ProbeInfo API, and BigQuery schemas
+- **Debug Airflow failures** - Investigate DAG failures, fetch task logs, and identify root causes
 
 ## Features
 
@@ -29,7 +30,9 @@ Example usage:
 
 ### Skills (Auto-Activated)
 
-The plugin includes two Skills that Claude can automatically invoke when relevant:
+The plugin includes Skills that Claude can automatically invoke when relevant:
+
+#### For Data Scientists & Analysts
 
 **mozilla-probe-discovery** - Activated when you ask about:
 - Finding metrics or probes in Mozilla products
@@ -41,6 +44,16 @@ The plugin includes two Skills that Claude can automatically invoke when relevan
 - BigQuery Mozilla telemetry
 - baseline_clients_*, events_stream tables
 - User counts or data analysis
+
+#### For Data Engineers
+
+**airflow-debugging** - Activated when you ask about:
+- Failed DAGs or DAG run errors
+- Airflow task logs and debugging
+- bqetl pipeline failures
+- Data pipeline debugging
+
+This skill includes bundled scripts for listing failed DAGs and fetching task logs from GCS. It requires `gcloud` authentication and access to `gs://airflow-remote-logs-prod-prod`. It only activates when relevant — users who only need telemetry/query help won't encounter any additional prerequisites.
 
 Skills activate automatically based on your questions - no need to use the slash command.
 
@@ -58,8 +71,11 @@ mozdata-claude-plugin/
 ├── skills/
 │   ├── probe-discovery/
 │   │   └── SKILL.md           # Auto-activated for probe questions
-│   └── query-writing/
-│       └── SKILL.md           # Auto-activated for query questions
+│   ├── query-writing/
+│   │   └── SKILL.md           # Auto-activated for query questions
+│   └── airflow-debugging/
+│       ├── SKILL.md           # Auto-activated for Airflow failures
+│       └── scripts/           # Helper scripts (list-failed-dags, fetch-task-log)
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .mcp.json                  # Bundled MCP servers (Glean Dictionary)
