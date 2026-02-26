@@ -52,7 +52,7 @@ def query_failed_dags(since: datetime, verbose: bool = False) -> list[dict]:
     query = (
         'resource.type="k8s_container" AND '
         'resource.labels.namespace_name="telemetry-airflow-prod" AND '
-        f'textPayload=~"DagRun Finished.*state=failed" AND '
+        f'textPayload=~"DagRun Finished.*state=success" AND '
         f'timestamp>="{timestamp}"'
     )
 
