@@ -11,7 +11,6 @@ Examples:
 import argparse
 import subprocess
 import sys
-import re
 from datetime import datetime, timedelta, timezone
 
 
@@ -28,7 +27,7 @@ def parse_since(since_str: str) -> datetime:
     match = re.match(r'^(\d+)([hd])$', since_str.lower())
     if match:
         value, unit = int(match.group(1)), match.group(2)
-        if unit == 'h':
+        if unit == 'm':
             return now - timedelta(hours=value)
         elif unit == 'd':
             return now - timedelta(days=value)
