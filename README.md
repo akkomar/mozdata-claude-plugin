@@ -76,6 +76,8 @@ mozdata-claude-plugin/
 │   └── airflow-debugging/
 │       ├── SKILL.md           # Auto-activated for Airflow failures
 │       └── scripts/           # Helper scripts (list-failed-dags, fetch-task-log)
+├── bigquery/
+│   └── tools.yaml             # genai-toolbox config (read-only BigQuery access)
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .mcp.json                  # Bundled MCP servers (Glean Dictionary)
@@ -144,6 +146,89 @@ claude mcp list
 ```
 
 **Note:** A `.mcp.json.example` file is included in the plugin for reference. We currently can't configure remote MCP servers directly in the plugin due to a [bug in Claude Code](https://github.com/anthropics/claude-code/issues/9427).
+
+### BigQuery MCP Server (optional, for direct query execution)
+
+The plugin can optionally execute BigQuery queries directly using Google's [MCP Toolbox for Databases](https://github.com/googleapis/genai-toolbox).
+
+#### Prerequisites
+
+1. **Google Cloud authentication** with Application Default Credentials (ADC):
+   ```bash
+   gcloud auth login YOUR_EMAIL@mozilla.com --update-adc
+   ```
+
+2. **Install MCP Toolbox** (choose one):
+
+   <details open>
+   <summary><strong>Option A: Binary download (recommended)</strong></summary>
+
+   Download the pre-built binary for your platform:
+
+   macOS (Apple Silicon):
+   ```bash
+   mkdir -p ~/.local/bin/genai-toolbox
+   curl -L -o ~/.local/bin/genai-toolbox/toolbox \
+     https://storage.googleapis.com/genai-toolbox/v0.28.0/darwin/arm64/toolbox
+   chmod +x ~/.local/bin/genai-toolbox/toolbox
+   ```
+
+   macOS (Intel):
+   ```bash
+   mkdir -p ~/.local/bin/genai-toolbox
+   curl -L -o ~/.local/bin/genai-toolbox/toolbox \
+     https://storage.googleapis.com/genai-toolbox/v0.28.0/darwin/amd64/toolbox
+   chmod +x ~/.local/bin/genai-toolbox/toolbox
+   ```
+
+   Linux (AMD64):
+   ```bash
+   mkdir -p ~/.local/bin/genai-toolbox
+   curl -L -o ~/.local/bin/genai-toolbox/toolbox \
+     https://storage.googleapis.com/genai-toolbox/v0.28.0/linux/amd64/toolbox
+   chmod +x ~/.local/bin/genai-toolbox/toolbox
+   ```
+
+   Windows (AMD64):
+   ```powershell
+   New-Item -ItemType Directory -Force -Path $env:USERPROFILE\.local\bin\genai-toolbox
+   curl -L -o $env:USERPROFILE\.local\bin\genai-toolbox\toolbox.exe `
+     https://storage.googleapis.com/genai-toolbox/v0.28.0/windows/amd64/toolbox.exe
+   ```
+
+   Note: The binary will be at `~/.local/bin/genai-toolbox/toolbox`.
+
+   </details>
+
+   <details>
+   <summary><strong>Option B: NPX (if you have Node.js)</strong></summary>
+
+   No installation needed - npx will download the package automatically when you configure the MCP server below.
+
+   </details>
+
+#### Configure MCP Server
+
+**If using binary (Option A):**
+```bash
+TOOLS_FILE=$(find ~/.claude/plugins/cache -path '*/mozdata/*/bigquery/tools.yaml' | sort -V | tail -1)
+claude mcp add bigquery -- ~/.local/bin/genai-toolbox/toolbox --tools-file "$TOOLS_FILE" --stdio
+```
+
+**If using npx (Option B):**
+```bash
+TOOLS_FILE=$(find ~/.claude/plugins/cache -path '*/mozdata/*/bigquery/tools.yaml' | sort -V | tail -1)
+claude mcp add bigquery -- npx -y @toolbox-sdk/server --tools-file "$TOOLS_FILE" --stdio
+```
+
+#### Verify Setup
+
+```bash
+claude mcp list
+# Should show: bigquery (...) - ✓ Connected
+```
+
+The BigQuery connection is read-only (`writeMode: blocked`) - no data can be modified. If you skip this setup, the plugin can still help you write queries but won't be able to execute them.
 
 ### Installation
 

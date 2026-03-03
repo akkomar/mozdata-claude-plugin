@@ -4,7 +4,7 @@ description: >
   Write efficient BigQuery queries for Mozilla telemetry. Use when user asks about:
   Firefox DAU/MAU, telemetry queries, BigQuery Mozilla, baseline_clients,
   events_stream, search metrics, user counts, or Firefox data analysis.
-allowed-tools: WebFetch, mcp__dataHub__search, mcp__dataHub__get_entities, mcp__dataHub__list_schema_fields, Bash(bq show:*)
+allowed-tools: WebFetch, mcp__dataHub__search, mcp__dataHub__get_entities, mcp__dataHub__list_schema_fields, mcp__bigquery__execute_sql, mcp__bigquery__list_dataset_ids, mcp__bigquery__list_table_ids, mcp__bigquery__get_table_info, mcp__bigquery__get_dataset_info, Bash(bq show:*)
 ---
 
 # Mozilla BigQuery Query Writing
@@ -78,6 +78,14 @@ AND sample_id = 0  -- 1% sample
    - Channel/country/OS as needed
 
 5. **Write the query** following templates in knowledge/query-writing.md
+
+6. **Execute the query** if BigQuery MCP tools are available (`mcp__bigquery__*`):
+   - Offer to run the query for the user after writing it
+   - Use `mcp__bigquery__execute_sql` to execute queries directly
+   - Use `mcp__bigquery__get_table_info` to inspect table schemas
+   - Use `mcp__bigquery__list_dataset_ids` / `mcp__bigquery__list_table_ids` to explore available data
+   - Always include partition filters and sample_id in executed queries
+   - If the tools are not available, provide the query for the user to run manually
 
 ## Response Format
 
