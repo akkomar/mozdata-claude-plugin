@@ -160,7 +160,7 @@ The plugin can optionally execute BigQuery queries directly using Google's [MCP 
 
 2. **Install MCP Toolbox** (choose one):
 
-   <details open>
+   <details>
    <summary><strong>Option A: Binary download (recommended)</strong></summary>
 
    Download the pre-built binary for your platform:
@@ -220,6 +220,8 @@ claude mcp add bigquery -- ~/.local/bin/genai-toolbox/toolbox --tools-file "$TOO
 TOOLS_FILE=$(find ~/.claude/plugins/cache -path '*/mozdata/*/bigquery/tools.yaml' | sort -V | tail -1)
 claude mcp add bigquery -- npx -y @toolbox-sdk/server --tools-file "$TOOLS_FILE" --stdio
 ```
+
+Add `--scope user` flag to configure the MCP server globally for all projects.
 
 #### Verify Setup
 
