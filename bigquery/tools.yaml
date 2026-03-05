@@ -4,6 +4,29 @@ sources:
     project: mozdata
     location: US
     writeMode: "blocked"
+    # There are two ways to restrict access to datasets:
+    #
+    # 1. allowedDatasets (toolbox-level) — the toolbox dry-runs every query
+    #    and checks referenced tables against this list. list_dataset_ids
+    #    also returns only these datasets, so the LLM never sees the rest.
+    #    See https://googleapis.github.io/genai-toolbox/resources/sources/bigquery/
+    allowedDatasets:
+      - "telemetry"
+      - "telemetry_derived"
+      - "firefox_desktop"
+      - "firefox_desktop_derived"
+      - "fenix"
+      - "fenix_derived"
+      - "firefox_ios"
+      - "firefox_ios_derived"
+      - "search"
+      - "search_derived"
+      - "accounts_frontend"
+      - "monitoring"
+    # 2. impersonateServiceAccount (GCP IAM-level) — this SA should only
+    #    have bigquery.dataViewer on non-PII datasets, so even if the
+    #    allowedDatasets list above is wrong, GCP IAM still blocks access.
+    impersonateServiceAccount: "toolbox-no-pii@moz-fx-data-shared-prod.iam.gserviceaccount.com"
     maxQueryResultRows: ${BIGQUERY_MAX_QUERY_RESULT_ROWS:100}
 
 tools:
@@ -12,6 +35,7 @@ tools:
     source: bigquery-source
     description: >
       Execute a read-only SQL query against Mozilla's BigQuery data warehouse.
+      This endpoint has NO access to PII datasets.
       IMPORTANT: Always include partition filters (submission_date or
       DATE(submission_timestamp)) and use sample_id = 0 for development queries.
       Prefer querying mozdata project tables.
@@ -19,22 +43,22 @@ tools:
   list_dataset_ids:
     kind: bigquery-list-dataset-ids
     source: bigquery-source
-    description: List available BigQuery datasets.
+    description: List available BigQuery datasets (restricted to non-PII datasets only).
 
   list_table_ids:
     kind: bigquery-list-table-ids
     source: bigquery-source
-    description: List tables in a BigQuery dataset.
+    description: List tables in a BigQuery dataset (restricted to non-PII datasets only).
 
   get_table_info:
     kind: bigquery-get-table-info
     source: bigquery-source
-    description: Get table schema and metadata.
+    description: Get table schema and metadata (restricted to non-PII datasets only).
 
   get_dataset_info:
     kind: bigquery-get-dataset-info
     source: bigquery-source
-    description: Get dataset metadata.
+    description: Get dataset metadata (restricted to non-PII datasets only).
 
 toolsets:
   mozilla_bigquery:
