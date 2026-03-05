@@ -58,7 +58,7 @@ def query_failed_dags(since: datetime, verbose: bool = False) -> list[dict]:
     )
 
     cmd = [
-        'gcloud', 'logging', 'read', query,
+        'gcloud', 'logging', 'reads', query,
         '--project=moz-fx-dataservices-high-prod',
         '--limit=200',
         '--format=value(timestamp,textPayload)'
