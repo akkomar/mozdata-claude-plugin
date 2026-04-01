@@ -11,7 +11,6 @@ Examples:
 import argparse
 import subprocess
 import sys
-import re
 from datetime import datetime, timedelta, timezone
 
 
@@ -28,7 +27,7 @@ def parse_since(since_str: str) -> datetime:
     match = re.match(r'^(\d+)([hd])$', since_str.lower())
     if match:
         value, unit = int(match.group(1)), match.group(2)
-        if unit == 'h':
+        if unit == 'm':
             return now - timedelta(hours=value)
         elif unit == 'd':
             return now - timedelta(days=value)
@@ -53,13 +52,13 @@ def query_failed_dags(since: datetime, verbose: bool = False) -> list[dict]:
     query = (
         'resource.type="k8s_container" AND '
         'resource.labels.namespace_name="telemetry-airflow-prod" AND '
-        f'textPayload=~"DagRun Finished.*state=failed" AND '
+        f'textPayload=~"DagRun Finished.*state=success" AND '
         f'timestamp>="{timestamp}"'
     )
 
     cmd = [
         'gcloud', 'logging', 'read', query,
-        '--project=moz-fx-dataservices-high-prod',
+        '--project=moz-fx-dataservices-high',
         '--limit=200',
         '--format=value(timestamp,textPayload)'
     ]
