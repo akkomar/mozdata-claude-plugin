@@ -77,7 +77,7 @@ mozdata-claude-plugin/
 │       ├── SKILL.md           # Auto-activated for Airflow failures
 │       └── scripts/           # Helper scripts (list-failed-dags, fetch-task-log)
 ├── bigquery/
-│   └── tools.yaml             # genai-toolbox config (read-only BigQuery access)
+│   └── tools.yaml             # genai-toolbox config (BigQuery access)
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .mcp.json                  # Bundled MCP servers (Glean Dictionary)
@@ -116,6 +116,15 @@ The plugin understands:
 - DataHub MCP - BigQuery schema metadata (requires separate setup)
 
 ## Setup
+
+### Installation
+
+Add the GitHub repository as a marketplace and install the plugin:
+
+```bash
+claude plugin marketplace add akkomar/mozdata-claude-plugin
+claude plugin install mozdata@akomar-mozdata-marketplace
+```
 
 ### Prerequisites
 
@@ -211,14 +220,12 @@ The plugin can optionally execute BigQuery queries directly using Google's [MCP 
 
 **If using binary (Option A):**
 ```bash
-TOOLS_FILE=$(find ~/.claude/plugins/cache -path '*/mozdata/*/bigquery/tools.yaml' | sort -V | tail -1)
-claude mcp add bigquery -- ~/.local/bin/genai-toolbox/toolbox --tools-file "$TOOLS_FILE" --stdio
+claude mcp add bigquery -- ~/.local/bin/genai-toolbox/toolbox --tools-file ~/.claude/plugins/marketplaces/akomar-mozdata-marketplace/bigquery/tools.yaml --stdio
 ```
 
 **If using npx (Option B):**
 ```bash
-TOOLS_FILE=$(find ~/.claude/plugins/cache -path '*/mozdata/*/bigquery/tools.yaml' | sort -V | tail -1)
-claude mcp add bigquery -- npx -y @toolbox-sdk/server --tools-file "$TOOLS_FILE" --stdio
+claude mcp add bigquery -- npx -y @toolbox-sdk/server --tools-file ~/.claude/plugins/marketplaces/akomar-mozdata-marketplace/bigquery/tools.yaml --stdio
 ```
 
 Add `--scope user` flag to configure the MCP server globally for all projects.
@@ -230,26 +237,7 @@ claude mcp list
 # Should show: bigquery (...) - ✓ Connected
 ```
 
-The BigQuery connection is read-only (`writeMode: blocked`) - no data can be modified. If you skip this setup, the plugin can still help you write queries but won't be able to execute them.
-
-### Installation
-
-First start Claude Code, then add the GitHub repository as a marketplace and install the plugin:
-
-```bash
-/plugin marketplace add akkomar/mozdata-claude-plugin
-/plugin install mozdata@akkomar/mozdata-claude-plugin
-```
-
-Alternatively, use the interactive menu:
-```bash
-/plugin
-# Then select "Add marketplace" and enter: akkomar/mozdata-claude-plugin
-# Then select "Install plugin" and choose mozdata
-# Then select "Enable plugin"
-```
-
-Restart Claude Code for the plugin to load.
+The BigQuery connection includes read-only access to all datasets and write access restricted to `mozdata.analysis` and `mozdata.tmp` datasets only (enforced by the MCP Toolbox via [`allowedDatasets` config](bigquery/tools.yaml)). If you skip this setup, the plugin can still help you write queries but won't be able to execute them.
 
 ### Keeping the Plugin Updated
 
@@ -259,7 +247,7 @@ Third-party marketplaces have auto-update disabled by default. To enable automat
 
 1. Run `/plugin` to open the plugin manager
 2. Select the **Marketplaces** tab
-3. Choose `akkomar/mozdata-claude-plugin`
+3. Choose `akomar-mozdata-marketplace`
 4. Select **Enable auto-update**
 
 With auto-update enabled, Claude Code will automatically check for and install plugin updates at startup.
@@ -269,10 +257,8 @@ With auto-update enabled, Claude Code will automatically check for and install p
 To manually check for and install updates:
 
 ```bash
-/plugin update mozdata@akkomar/mozdata-claude-plugin
+claude plugin update mozdata@akomar-mozdata-marketplace
 ```
-
-Restart Claude Code after updating for changes to take effect.
 
 ## Usage
 
