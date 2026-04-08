@@ -318,3 +318,4 @@ SELECT mozfun.bits28.active_in_range(days_seen_bits, start_offset, num_days)
 - ALWAYS include cost/performance context when recommending tables
 - ALWAYS use events_stream for event queries (never raw events_v1)
 - ALWAYS use baseline_clients_last_seen for MAU calculations
+- ALWAYS write BigQuery-compatible SQL (GoogleSQL dialect) - prefer JOINs, CTEs, and window functions over complex correlated subqueries, as BigQuery can only execute correlated subqueries it can de-correlate into JOINs internally
