@@ -83,7 +83,7 @@ ORDER BY submission_date DESC
 
 ```sql
 -- Count daily active clients - ONE ROW PER CLIENT PER DAY
--- COST: ~$0.10, SPEED: ~2 seconds (100x faster than raw baseline!)
+-- COST: ~$0.10, SPEED: ~2 seconds (much faster than raw baseline)
 SELECT
   submission_date,
   COUNT(DISTINCT client_id) AS dau
@@ -100,7 +100,7 @@ ORDER BY submission_date DESC
 
 ```sql
 -- MAU/WAU calculation using 28-day bit patterns
--- SCANS ONLY 1 DAY to get 28-day window! (28x faster)
+-- SCANS ONLY 1 DAY to get 28-day window
 -- COST: ~$0.01, SPEED: <1 second
 SELECT
   submission_date,
@@ -120,7 +120,7 @@ GROUP BY submission_date
 ```sql
 -- Event funnel analysis - events already flattened!
 -- NO UNNEST needed! Clustered by event_category for speed!
--- COST: ~$0.20, SPEED: ~2 seconds (30x faster than raw events_v1)
+-- COST: ~$0.20, SPEED: ~2 seconds (much faster than raw events_v1)
 SELECT
   event_category,
   event_name,
@@ -141,7 +141,7 @@ LIMIT 100
 
 ```sql
 -- Mobile search volume by engine
--- COST: ~$0.02, SPEED: ~1 second (45x faster than raw metrics!)
+-- COST: ~$0.02, SPEED: ~1 second (much faster than raw metrics)
 SELECT
   submission_date,
   search_engine,
@@ -199,7 +199,7 @@ LIMIT 100
 
 ## Critical Anti-Patterns to PREVENT
 
-**DON'T: Count DAU from raw baseline pings (typically 100x slower)**
+**DON'T: Count DAU from raw baseline pings (orders of magnitude slower)**
 ```sql
 -- BAD: Scanning millions of individual pings
 SELECT COUNT(DISTINCT client_info.client_id)
@@ -215,7 +215,7 @@ FROM mozdata.firefox_desktop.baseline_clients_daily
 WHERE submission_date = '2025-10-13'
 ```
 
-**DON'T: Scan 28 days for MAU (28x slower)**
+**DON'T: Scan 28 days for MAU (much slower — scans 28 days instead of 1)**
 ```sql
 -- BAD: Scanning 28 days of data
 SELECT COUNT(DISTINCT client_id)
@@ -228,10 +228,10 @@ WHERE submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 28 DAY)
 -- GOOD: 28-day window encoded in bits, ~$0.01 instead of ~$0.50
 SELECT COUNT(DISTINCT CASE WHEN days_seen_bits > 0 THEN client_id END)
 FROM mozdata.firefox_desktop.baseline_clients_last_seen
-WHERE submission_date = CURRENT_DATE()
+WHERE submission_date = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
 ```
 
-**DON'T: Query raw events with manual UNNEST (30x slower)**
+**DON'T: Query raw events with manual UNNEST (much slower)**
 ```sql
 -- BAD: Requires UNNEST, not optimized for event queries
 SELECT event.category, COUNT(*)

@@ -3,13 +3,13 @@
 ## The Aggregation Hierarchy - ALWAYS START FROM TOP
 
 ```
-Level 1: PRE-AGGREGATED TABLES (typically 10-100x faster, 95-99% cost savings)
+Level 1: PRE-AGGREGATED TABLES (significantly faster, major cost savings)
   → active_users_aggregates (DAU/MAU by dimensions)
   → mobile_search_clients_daily (mobile search)
 
-Level 2: CLIENT-DAILY TABLES (typically 5-100x faster depending on query)
-  → baseline_clients_daily (daily per-client baseline metrics, ~100x for user counts)
-  → baseline_clients_last_seen (28-day windows, 28x faster for MAU)
+Level 2: CLIENT-DAILY TABLES (significantly faster depending on query)
+  → baseline_clients_daily (daily per-client baseline metrics, much faster for user counts)
+  → baseline_clients_last_seen (28-day windows, scans 1 day instead of 28 for MAU)
 
 Level 3: RAW PING TABLES (slowest, most expensive - avoid for aggregations)
   → baseline (raw baseline pings)
@@ -24,7 +24,7 @@ Level 3: RAW PING TABLES (slowest, most expensive - avoid for aggregations)
 **If query needs DAU/MAU/WAU broken down by standard dimensions** (country, channel, OS, version):
 ```
 USE: mozdata.{product}_derived.active_users_aggregates_v3
-SPEEDUP: Typically 100x faster (can range 10-100x), 99% cost reduction
+SPEEDUP: Significantly faster, major cost reduction
 EXAMPLE: DAU by country for Firefox Desktop
 ```
 
@@ -32,11 +32,11 @@ EXAMPLE: DAU by country for Firefox Desktop
 ```
 FOR MAU/WAU/retention:
   USE: mozdata.{product}.baseline_clients_last_seen
-  WHY: Bit patterns encode 28-day windows (28x faster than scanning 28 days)
+  WHY: Bit patterns encode 28-day windows (scans 1 day instead of 28)
 
 FOR DAU or client-level daily metrics:
   USE: mozdata.{product}.baseline_clients_daily
-  WHY: Pre-aggregates all pings per client per day (100x faster than raw baseline)
+  WHY: Pre-aggregates all pings per client per day (much faster than raw baseline)
 ```
 
 **NEVER query raw baseline table for DAU unless you have a specific reason!**
@@ -46,7 +46,7 @@ FOR DAU or client-level daily metrics:
 **ALWAYS use events_stream for event queries:**
 ```
 USE: mozdata.{product}.events_stream
-WHY: Events pre-unnested, clustered by event_category (30x faster)
+WHY: Events pre-unnested, clustered by event_category (much faster)
 RAW ALTERNATIVE: {product}_stable.events_v1 (requires UNNEST, not clustered)
 ```
 
@@ -64,7 +64,7 @@ Client → events ping → {product}_stable.events_v1 (ARRAY field) →
 **For mobile search (Android/iOS):**
 ```
 USE: mozdata.search.mobile_search_clients_daily_v2
-SPEEDUP: 45x faster than raw metrics
+SPEEDUP: Much faster than raw metrics
 ```
 
 **For desktop SERP (Search Engine Results Page) analysis:**
@@ -96,7 +96,7 @@ USE: mozdata.{product}.baseline_clients_last_seen
 KEY FIELDS:
   - days_seen_bits (28-bit pattern: 1 = active that day)
   - days_active_bits (28-bit pattern: 1 = had duration > 0)
-SPEEDUP: Scan 1 day instead of 28 days (28x faster)
+SPEEDUP: Scans 1 day instead of 28 days
 ```
 
 **For cohort analysis:**
@@ -129,11 +129,11 @@ New Profiles: mozdata.{product}_derived.new_profile_clients
 
 | Table | Purpose | Speedup |
 |-------|---------|---------|
-| `{product}_derived.active_users_aggregates_v3` | DAU/MAU by dimensions | 100x |
-| `{product}.baseline_clients_daily` | Daily per-client metrics | 100x |
-| `{product}.baseline_clients_last_seen` | 28-day windows, retention | 28x |
-| `{product}.events_stream` | Event analysis | 30x |
-| `search.mobile_search_clients_daily_v2` | Mobile search | 45x |
+| `{product}_derived.active_users_aggregates_v3` | DAU/MAU by dimensions | Significantly faster |
+| `{product}.baseline_clients_daily` | Daily per-client metrics | Significantly faster |
+| `{product}.baseline_clients_last_seen` | 28-day windows, retention | Scans 1 day not 28 |
+| `{product}.events_stream` | Event analysis | Much faster |
+| `search.mobile_search_clients_daily_v2` | Mobile search | Much faster |
 
 ## Deprecated & Obsolete Tables
 

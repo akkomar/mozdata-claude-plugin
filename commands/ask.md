@@ -62,11 +62,11 @@ The following knowledge modules contain detailed reference information:
 2. **Select optimal table using this decision tree**:
    | Query Type | Best Table | Why |
    |------------|------------|-----|
-   | DAU/MAU by standard dimensions | `{product}_derived.active_users_aggregates_v3` | Pre-aggregated, 100x faster |
+   | DAU/MAU by standard dimensions | `{product}_derived.active_users_aggregates_v3` | Pre-aggregated, much faster |
    | DAU with custom dimensions | `{product}.baseline_clients_daily` | One row per client per day |
    | MAU/WAU/retention | `{product}.baseline_clients_last_seen` | Bit patterns, scan 1 day not 28 |
    | Event analysis | `{product}.events_stream` | Pre-unnested, clustered |
-   | Mobile search | `search.mobile_search_clients_daily_v2` | Pre-aggregated, 45x faster |
+   | Mobile search | `search.mobile_search_clients_daily_v2` | Pre-aggregated, much faster |
    | Session duration | `{product}.baseline_clients_daily` | Has durations field |
    | Specific Glean metric | `{product}.metrics` | Raw metrics ping |
 
@@ -128,7 +128,7 @@ The following knowledge modules contain detailed reference information:
 - **Provide working, runnable SQL** - Not pseudocode
 - **Include comments** explaining table choice and patterns
 - **Add LIMIT clauses** for development
-- **Mention performance benefits** when recommending aggregates (e.g., "100x faster")
+- **Mention performance benefits** when recommending aggregates (e.g., "significantly faster")
 - **Warn about costs** when user query would be expensive
 - **Link to relevant documentation** - Glean Dictionary, Mozilla docs
 - **Use Glean Dictionary MCP** - Primary method for metric/ping discovery
@@ -155,7 +155,7 @@ The following knowledge modules contain detailed reference information:
 
 When providing queries, structure your response as:
 
-1. **Table Choice**: Which table you're using and why (e.g., "Using baseline_clients_daily because it's 100x faster than raw baseline for DAU counts")
+1. **Table Choice**: Which table you're using and why (e.g., "Using baseline_clients_daily because it's significantly faster than raw baseline for DAU counts")
 2. **Performance Note**: Speed and cost implications compared to alternatives
 3. **Query**: Complete, runnable SQL with proper filters and comments
 4. **Customization**: How the user can modify the query for their specific needs
@@ -178,7 +178,7 @@ These examples demonstrate the expected approach and output format:
 <approach>
 1. Identified this as a DAU query with standard dimension (country)
 2. Checked aggregation hierarchy → active_users_aggregates_v3 has pre-computed DAU by country
-3. This is the fastest option (100x faster than raw baseline)
+3. This is the fastest option — pre-aggregated, orders of magnitude less data to scan
 </approach>
 <response>
 **Table Choice**: Using `mozdata.firefox_desktop_derived.active_users_aggregates_v3` because DAU is already pre-aggregated by country—no need to count distinct clients.
@@ -252,7 +252,7 @@ ORDER BY date DESC
 <response>
 **Table Choice**: Using `mozdata.firefox_desktop.events_stream` because events are already unnested (one row per event) and the table is clustered by event_category for fast filtering.
 
-**Performance**: ~30x faster than querying raw events_v1 which requires UNNEST
+**Performance**: Much faster than querying raw events_v1 which requires UNNEST
 
 **Query**:
 ```sql
@@ -279,13 +279,13 @@ ORDER BY date DESC, total_events DESC
 <user-request>How do I query search counts by engine in Firefox Android?</user-request>
 <approach>
 1. Search metrics for mobile → use mobile_search_clients_daily_v2
-2. This is a pre-aggregated table (45x faster than raw metrics)
+2. This is a pre-aggregated table — much faster than raw metrics
 3. Filter by normalized_app_id for Firefox Android
 </approach>
 <response>
 **Table Choice**: Using `mozdata.search.mobile_search_clients_daily_v2` because search metrics are pre-aggregated per client per day—much faster than querying raw labeled_counter from metrics ping.
 
-**Performance**: ~$0.02, ~1 second (45x faster than raw metrics with UNNEST)
+**Performance**: ~$0.02, ~1 second (much faster than raw metrics with UNNEST)
 
 **Query**:
 ```sql
@@ -310,13 +310,13 @@ ORDER BY submission_date DESC, search_access_point_count DESC
 <user-request>Calculate MAU for Firefox iOS</user-request>
 <approach>
 1. MAU calculation → use baseline_clients_last_seen with bit patterns
-2. Scan only 1 day to get 28-day window (28x faster than scanning 28 days)
+2. Scan only 1 day to get 28-day window (scans 1 day instead of 28)
 3. Use days_seen_bits > 0 to check any activity in window
 </approach>
 <response>
 **Table Choice**: Using `mozdata.firefox_ios.baseline_clients_last_seen` because it encodes 28-day activity in bit patterns—we scan just 1 day to get MAU instead of 28 days!
 
-**Performance**: ~$0.01, <1 second (28x faster and cheaper than scanning 28 days of baseline_clients_daily)
+**Performance**: ~$0.01, <1 second (scans 1 day instead of 28 days of baseline_clients_daily)
 
 **Query**:
 ```sql

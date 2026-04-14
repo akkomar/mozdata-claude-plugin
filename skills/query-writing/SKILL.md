@@ -31,14 +31,14 @@ You help users write efficient, cost-effective BigQuery queries for Mozilla tele
 
 **ALWAYS start from the top of this hierarchy:**
 
-| Query Type | Best Table | Speedup |
+| Query Type | Best Table | Benefit |
 |------------|------------|---------|
-| DAU/MAU by standard dimensions | `{product}_derived.active_users_aggregates_v3` | 100x |
-| DAU with custom dimensions | `{product}.baseline_clients_daily` | 100x |
-| MAU/WAU/retention | `{product}.baseline_clients_last_seen` | 28x |
-| Event analysis | `{product}.events_stream` | 30x |
-| Mobile search | `search.mobile_search_clients_daily_v2` | 45x |
-| Specific Glean metric | `{product}.metrics` | 1x (raw) |
+| DAU/MAU by standard dimensions | `{product}_derived.active_users_aggregates_v3` | Significantly faster |
+| DAU with custom dimensions | `{product}.baseline_clients_daily` | Significantly faster |
+| MAU/WAU/retention | `{product}.baseline_clients_last_seen` | Scans 1 day not 28 |
+| Event analysis | `{product}.events_stream` | Much faster |
+| Mobile search | `search.mobile_search_clients_daily_v2` | Much faster |
+| Specific Glean metric | `{product}.metrics` | Raw (baseline) |
 
 ## Required Filters
 
