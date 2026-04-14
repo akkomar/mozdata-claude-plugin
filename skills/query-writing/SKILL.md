@@ -1,5 +1,5 @@
 ---
-name: mozilla-query-writing
+name: query-writing
 description: >
   Write efficient BigQuery queries for Mozilla telemetry. Use when user asks about:
   Firefox DAU/MAU, telemetry queries, BigQuery Mozilla, baseline_clients,
@@ -9,87 +9,24 @@ allowed-tools: WebFetch, mcp__dataHub__search, mcp__dataHub__get_entities, mcp__
 
 # Mozilla BigQuery Query Writing
 
-You help users write efficient, cost-effective BigQuery queries for Mozilla telemetry data.
-
-## Knowledge References
-
 @knowledge/data-catalog.md
 @knowledge/query-writing.md
 @knowledge/architecture.md
 
-## Critical Constraints
+## Guardrails
 
-- ALWAYS check for aggregate tables before suggesting raw tables
-- NEVER generate queries without partition filters (DATE(submission_timestamp) or submission_date)
-- NEVER call DAU/MAU counts "users" - use "clients" or "profiles"
-- NEVER suggest joining across products by client_id (separate namespaces)
-- ALWAYS include sample_id filter for development/testing queries
-- ALWAYS use events_stream for event queries (never raw events_v1)
-- ALWAYS use baseline_clients_last_seen for MAU calculations
-
-## Table Selection Quick Reference
-
-**ALWAYS start from the top of this hierarchy:**
-
-| Query Type | Best Table | Benefit |
-|------------|------------|---------|
-| DAU/MAU by standard dimensions | `{product}_derived.active_users_aggregates_v3` | Significantly faster |
-| DAU with custom dimensions | `{product}.baseline_clients_daily` | Significantly faster |
-| MAU/WAU/retention | `{product}.baseline_clients_last_seen` | Scans 1 day not 28 |
-| Event analysis | `{product}.events_stream` | Much faster |
-| Mobile search | `search.mobile_search_clients_daily_v2` | Much faster |
-| Specific Glean metric | `{product}.metrics` | Raw (baseline) |
-
-## Required Filters
-
-**Aggregate tables** (use DATE):
-```sql
-WHERE submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
-```
-
-**Raw ping tables** (use TIMESTAMP):
-```sql
-WHERE DATE(submission_timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
-```
-
-**Development queries** (add sample_id):
-```sql
-AND sample_id = 0  -- 1% sample
-```
+- Use "clients" or "profiles" not "users" — BigQuery tracks client_id, not actual users
+- Do not suggest joining across products by client_id — each product has its own namespace
+- Always check for aggregate tables before suggesting raw tables
 
 ## Workflow
 
-1. **Identify query type** - What does the user want to measure?
-   - User counts (DAU/MAU/WAU)?
-   - Specific Glean metric?
-   - Event analysis?
-   - Search metrics?
-
-2. **Select optimal table** using the hierarchy above
-
-3. **Verify table exists** using DataHub MCP if needed:
-   ```
-   mcp__dataHub__search(query="/q {table_name}", filters={"entity_type": ["dataset"]})
-   ```
-
-4. **Add required filters**:
-   - Partition filter (DATE or TIMESTAMP based on table)
-   - sample_id for development
-   - Channel/country/OS as needed
-
-5. **Write the query** following templates in knowledge/query-writing.md
-
-6. **Execute the query** if BigQuery MCP tools are available (`mcp__bigquery__*`):
-   - Offer to run the query for the user after writing it
-   - Use `mcp__bigquery__execute_sql` to execute queries directly
-   - Use `mcp__bigquery__get_table_info` to inspect table schemas
-   - Use `mcp__bigquery__list_dataset_ids` / `mcp__bigquery__list_table_ids` to explore available data
+1. Identify query type (user counts, specific metric, events, search)
+2. Select optimal table using the aggregation hierarchy in knowledge/data-catalog.md
+3. Add required filters per knowledge/query-writing.md
+4. Write the query following templates in knowledge/query-writing.md
+5. If BigQuery MCP tools are available (`mcp__bigquery__*`), offer to execute the query directly:
+   - `mcp__bigquery__execute_sql` to run queries
+   - `mcp__bigquery__get_table_info` to inspect schemas
+   - `mcp__bigquery__list_dataset_ids` / `mcp__bigquery__list_table_ids` to explore data
    - Always include partition filters and sample_id in executed queries
-   - If the tools are not available, provide the query for the user to run manually
-
-## Response Format
-
-1. **Table Choice**: Which table and why (include speedup factor)
-2. **Performance Note**: Cost and speed implications
-3. **Query**: Complete, runnable SQL with proper filters
-4. **Customization**: How to modify for specific needs
