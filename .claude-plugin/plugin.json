@@ -1,7 +1,7 @@
 {
     "name": "mozdata",
     "description": "Mozilla data engineering toolkit: telemetry discovery, BigQuery queries, and Airflow debugging",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "author": {
         "name": "akomar"
     },

@@ -9,10 +9,10 @@ allowed-tools: mcp__dataHub__search, mcp__dataHub__get_entities, mcp__dataHub__l
 
 # Mozilla BigQuery Query Writing
 
-@knowledge/data-catalog.md
-@knowledge/query-writing.md
-@knowledge/architecture.md
-@knowledge/external-sources.md
+For table selection and aggregation hierarchy, see [data-catalog.md](../../knowledge/data-catalog.md).
+For query templates and best practices, see [query-writing.md](../../knowledge/query-writing.md).
+For data platform architecture, see [architecture.md](../../knowledge/architecture.md).
+For external sources (Confluence, UDF discovery), see [external-sources.md](../../knowledge/external-sources.md).
 
 ## Guardrails
 
