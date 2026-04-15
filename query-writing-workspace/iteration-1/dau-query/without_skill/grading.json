@@ -1,0 +1,12 @@
+{
+  "eval_id": 1,
+  "run_id": "dau-query-without_skill",
+  "configuration": "without_skill",
+  "expectations": [
+    {"text": "uses_active_users_aggregates", "passed": false, "evidence": "Query uses `telemetry.main` — a legacy raw table, not the official aggregate"},
+    {"text": "filters_app_name", "passed": false, "evidence": "Uses `app_name = 'Firefox'` which is wrong value (should be 'Firefox Desktop') and wrong table anyway"},
+    {"text": "uses_submission_date", "passed": false, "evidence": "Uses `DATE(submission_timestamp)` — the main table doesn't have submission_date; also wrong table entirely"},
+    {"text": "uses_sum_dau", "passed": false, "evidence": "Uses `COUNT(DISTINCT client_id)` instead of SUM(dau)"},
+    {"text": "correct_terminology", "passed": false, "evidence": "Response says 'Daily Active Users', 'unique users' throughout"}
+  ]
+}

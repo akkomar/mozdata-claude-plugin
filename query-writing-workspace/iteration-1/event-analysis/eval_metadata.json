@@ -1,0 +1,12 @@
+{
+  "eval_id": 2,
+  "eval_name": "event-analysis",
+  "prompt": "I need to analyze activity_stream click events in Firefox Desktop over the last week, broken down by country",
+  "assertions": [
+    {"name": "uses_events_stream", "description": "Uses events_stream table, not raw events_v1 with UNNEST"},
+    {"name": "filters_event_category", "description": "Filters on event_category = 'activity_stream'"},
+    {"name": "has_partition_filter", "description": "Includes DATE(submission_timestamp) partition filter with ~7 day range"},
+    {"name": "has_country_dimension", "description": "Includes country breakdown using normalized_country_code or metadata.geo.country"},
+    {"name": "has_sample_id", "description": "Includes sample_id filter for development/cost savings"}
+  ]
+}

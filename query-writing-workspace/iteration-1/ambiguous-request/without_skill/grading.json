@@ -1,0 +1,11 @@
+{
+  "eval_id": 3,
+  "run_id": "ambiguous-request-without_skill",
+  "configuration": "without_skill",
+  "expectations": [
+    {"text": "corrects_terminology", "passed": false, "evidence": "Response says 'how many people', 'unique users', 'active users' — never corrects to clients/profiles"},
+    {"text": "uses_aggregates_table", "passed": false, "evidence": "Query uses `org_mozilla_firefox.baseline` — a raw ping table, not the aggregate"},
+    {"text": "correct_android_app_name", "passed": false, "evidence": "No app_name filter — table is channel-specific but doesn't cover all Android channels"},
+    {"text": "has_partition_filter", "passed": true, "evidence": "Query has `DATE(submission_timestamp) >= DATE_SUB(...)` — a partition filter exists, though on the wrong table"}
+  ]
+}

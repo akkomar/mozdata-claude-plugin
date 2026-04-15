@@ -1,0 +1,11 @@
+{
+  "eval_id": 3,
+  "run_id": "ambiguous-request-with_skill",
+  "configuration": "with_skill",
+  "expectations": [
+    {"text": "corrects_terminology", "passed": true, "evidence": "Response explicitly explains 'Mozilla's telemetry tracks client profiles, not individual people' and defines DAC"},
+    {"text": "uses_aggregates_table", "passed": true, "evidence": "Query uses `moz-fx-data-shared-prod.telemetry.active_users_aggregates`"},
+    {"text": "correct_android_app_name", "passed": true, "evidence": "Query uses `app_name = 'Fenix'` and explains this is the codename for Firefox Android"},
+    {"text": "has_partition_filter", "passed": true, "evidence": "Query uses `submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)`"}
+  ]
+}

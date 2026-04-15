@@ -1,0 +1,173 @@
+{
+  "metadata": {
+    "skill_name": "query-writing",
+    "skill_path": "/Users/akomar/mozilla/dev/mozdata-claude-plugin/skills/query-writing/SKILL.md",
+    "executor_model": "claude-opus-4-6",
+    "analyzer_model": "claude-opus-4-6",
+    "timestamp": "2026-04-15T15:25:00Z",
+    "evals_run": [1, 2, 3],
+    "runs_per_configuration": 1
+  },
+  "runs": [
+    {
+      "eval_id": 1,
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 5,
+        "failed": 0,
+        "total": 5,
+        "time_seconds": 41.3,
+        "tokens": 23866,
+        "tool_calls": 7,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "uses_active_users_aggregates", "passed": true, "evidence": "Query uses `moz-fx-data-shared-prod.telemetry.active_users_aggregates`"},
+        {"text": "filters_app_name", "passed": true, "evidence": "Query contains `app_name = 'Firefox Desktop'`"},
+        {"text": "uses_submission_date", "passed": true, "evidence": "Query uses `submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)`"},
+        {"text": "uses_sum_dau", "passed": true, "evidence": "Query uses `SUM(dau) AS dau`"},
+        {"text": "correct_terminology", "passed": true, "evidence": "Response says 'Daily Active Clients' and 'client profiles, not individual users'"}
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 1,
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.0,
+        "passed": 0,
+        "failed": 5,
+        "total": 5,
+        "time_seconds": 15.3,
+        "tokens": 13666,
+        "tool_calls": 3,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "uses_active_users_aggregates", "passed": false, "evidence": "Query uses `telemetry.main` — a legacy raw table"},
+        {"text": "filters_app_name", "passed": false, "evidence": "Uses `app_name = 'Firefox'` (wrong value, wrong table)"},
+        {"text": "uses_submission_date", "passed": false, "evidence": "Uses DATE(submission_timestamp) on wrong table"},
+        {"text": "uses_sum_dau", "passed": false, "evidence": "Uses COUNT(DISTINCT client_id) instead of SUM(dau)"},
+        {"text": "correct_terminology", "passed": false, "evidence": "Says 'Daily Active Users', 'unique users' throughout"}
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 2,
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 5,
+        "failed": 0,
+        "total": 5,
+        "time_seconds": 44.6,
+        "tokens": 23978,
+        "tool_calls": 7,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "uses_events_stream", "passed": true, "evidence": "Query uses `mozdata.firefox_desktop.events_stream`"},
+        {"text": "filters_event_category", "passed": true, "evidence": "Query contains `event_category = 'activity_stream'`"},
+        {"text": "has_partition_filter", "passed": true, "evidence": "Query has `DATE(submission_timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`"},
+        {"text": "has_country_dimension", "passed": true, "evidence": "Query uses `normalized_country_code AS country`"},
+        {"text": "has_sample_id", "passed": true, "evidence": "Query includes `sample_id = 0` with explanatory comment"}
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 2,
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.6,
+        "passed": 3,
+        "failed": 2,
+        "total": 5,
+        "time_seconds": 17.0,
+        "tokens": 13704,
+        "tool_calls": 3,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "uses_events_stream", "passed": false, "evidence": "Query uses `firefox_desktop.events` with UNNEST(events)"},
+        {"text": "filters_event_category", "passed": true, "evidence": "Query filters `event.category = 'activity_stream'`"},
+        {"text": "has_partition_filter", "passed": true, "evidence": "Query has DATE(submission_timestamp) with 7-day range"},
+        {"text": "has_country_dimension", "passed": true, "evidence": "Query uses `metadata.geo.country AS country`"},
+        {"text": "has_sample_id", "passed": false, "evidence": "No sample_id filter present"}
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 3,
+      "configuration": "with_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 1.0,
+        "passed": 4,
+        "failed": 0,
+        "total": 4,
+        "time_seconds": 43.7,
+        "tokens": 24494,
+        "tool_calls": 10,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "corrects_terminology", "passed": true, "evidence": "Response explains 'client profiles, not individual people'"},
+        {"text": "uses_aggregates_table", "passed": true, "evidence": "Query uses `moz-fx-data-shared-prod.telemetry.active_users_aggregates`"},
+        {"text": "correct_android_app_name", "passed": true, "evidence": "Query uses `app_name = 'Fenix'` and explains the codename"},
+        {"text": "has_partition_filter", "passed": true, "evidence": "Query uses `submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)`"}
+      ],
+      "notes": []
+    },
+    {
+      "eval_id": 3,
+      "configuration": "without_skill",
+      "run_number": 1,
+      "result": {
+        "pass_rate": 0.25,
+        "passed": 1,
+        "failed": 3,
+        "total": 4,
+        "time_seconds": 19.4,
+        "tokens": 13677,
+        "tool_calls": 3,
+        "errors": 0
+      },
+      "expectations": [
+        {"text": "corrects_terminology", "passed": false, "evidence": "Says 'people', 'users', never corrects to clients/profiles"},
+        {"text": "uses_aggregates_table", "passed": false, "evidence": "Uses `org_mozilla_firefox.baseline` — raw ping table"},
+        {"text": "correct_android_app_name", "passed": false, "evidence": "No app_name filter, table is channel-specific only"},
+        {"text": "has_partition_filter", "passed": true, "evidence": "Has DATE(submission_timestamp) filter, though on wrong table"}
+      ],
+      "notes": []
+    }
+  ],
+  "run_summary": {
+    "with_skill": {
+      "pass_rate": {"mean": 1.0, "stddev": 0.0, "min": 1.0, "max": 1.0},
+      "time_seconds": {"mean": 43.2, "stddev": 1.7, "min": 41.3, "max": 44.6},
+      "tokens": {"mean": 24113, "stddev": 330, "min": 23866, "max": 24494}
+    },
+    "without_skill": {
+      "pass_rate": {"mean": 0.28, "stddev": 0.30, "min": 0.0, "max": 0.6},
+      "time_seconds": {"mean": 17.2, "stddev": 2.1, "min": 15.3, "max": 19.4},
+      "tokens": {"mean": 13682, "stddev": 19, "min": 13666, "max": 13704}
+    },
+    "delta": {
+      "pass_rate": "+0.72",
+      "time_seconds": "+26.0",
+      "tokens": "+10431"
+    }
+  },
+  "notes": [
+    "With-skill achieves 100% pass rate across all 3 evals vs 28% baseline",
+    "Baseline partially passes event-analysis (3/5) because general LLM knowledge covers basic patterns like partition filters and event category filtering",
+    "The biggest skill advantage is table selection: correct source-of-truth tables, correct project/dataset paths, and correct aggregation approach (SUM vs COUNT DISTINCT)",
+    "Terminology correction (clients vs users) is consistently enforced by the skill but never present in baseline",
+    "With-skill runs take ~2.5x longer and use ~1.8x more tokens due to reading knowledge files, which is expected"
+  ]
+}

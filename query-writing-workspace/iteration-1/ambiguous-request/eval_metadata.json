@@ -1,0 +1,11 @@
+{
+  "eval_id": 3,
+  "eval_name": "ambiguous-request",
+  "prompt": "How many people use Firefox on Android?",
+  "assertions": [
+    {"name": "corrects_terminology", "description": "Addresses that BigQuery tracks clients/profiles, not people/users"},
+    {"name": "uses_aggregates_table", "description": "Uses active_users_aggregates as the source-of-truth table"},
+    {"name": "correct_android_app_name", "description": "Filters by correct Android app_name (Fenix or similar)"},
+    {"name": "has_partition_filter", "description": "Includes submission_date partition filter"}
+  ]
+}

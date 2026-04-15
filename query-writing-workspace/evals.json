@@ -1,0 +1,113 @@
+{
+  "skill_name": "query-writing",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Write me query to get Firefox DAU",
+      "expected_output": "A query using active_users_aggregates with app_name filter, submission_date partition filter, SUM(dau), and clients/profiles terminology",
+      "files": [],
+      "assertions": [
+        {
+          "name": "uses_active_users_aggregates",
+          "type": "contains",
+          "description": "Uses the official source-of-truth table active_users_aggregates, not raw baseline or clients_daily",
+          "check": "query.sql contains 'active_users_aggregates'"
+        },
+        {
+          "name": "filters_app_name",
+          "type": "contains",
+          "description": "Filters by app_name for Firefox Desktop",
+          "check": "query.sql contains app_name filter with 'Firefox Desktop'"
+        },
+        {
+          "name": "uses_submission_date",
+          "type": "contains",
+          "description": "Uses submission_date (DATE) partition filter, not submission_timestamp",
+          "check": "query.sql contains 'submission_date'"
+        },
+        {
+          "name": "uses_sum_dau",
+          "type": "contains",
+          "description": "Uses SUM(dau) for aggregation, not COUNT DISTINCT client_id",
+          "check": "query.sql contains 'SUM(dau)' or similar aggregation on the dau column"
+        },
+        {
+          "name": "correct_terminology",
+          "type": "absence",
+          "description": "Says 'clients' or 'profiles' in explanation, not 'users' when referring to counted entities",
+          "check": "response.md does not refer to counted entities as 'users' (the word 'users' in table/column names is OK)"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "I need to analyze activity_stream click events in Firefox Desktop over the last week, broken down by country",
+      "expected_output": "A query using events_stream with event_category filter, partition filter, country dimension, and sample_id",
+      "files": [],
+      "assertions": [
+        {
+          "name": "uses_events_stream",
+          "type": "contains",
+          "description": "Uses events_stream table, not raw events_v1 with UNNEST",
+          "check": "query.sql contains 'events_stream'"
+        },
+        {
+          "name": "filters_event_category",
+          "type": "contains",
+          "description": "Filters on event_category = 'activity_stream'",
+          "check": "query.sql contains filter for activity_stream event category"
+        },
+        {
+          "name": "has_partition_filter",
+          "type": "contains",
+          "description": "Includes DATE(submission_timestamp) partition filter with ~7 day range",
+          "check": "query.sql contains DATE(submission_timestamp) with date range filter"
+        },
+        {
+          "name": "has_country_dimension",
+          "type": "contains",
+          "description": "Includes country breakdown using normalized_country_code or metadata.geo.country",
+          "check": "query.sql contains country field in SELECT and GROUP BY"
+        },
+        {
+          "name": "has_sample_id",
+          "type": "contains",
+          "description": "Includes sample_id filter for development/cost savings",
+          "check": "query.sql contains 'sample_id'"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "How many people use Firefox on Android?",
+      "expected_output": "Corrects terminology, uses active_users_aggregates with Android app_name, includes partition filter",
+      "files": [],
+      "assertions": [
+        {
+          "name": "corrects_terminology",
+          "type": "contains",
+          "description": "Addresses that BigQuery tracks clients/profiles, not people/users",
+          "check": "response.md mentions clients or profiles distinction"
+        },
+        {
+          "name": "uses_aggregates_table",
+          "type": "contains",
+          "description": "Uses active_users_aggregates as the source-of-truth table",
+          "check": "query.sql contains 'active_users_aggregates'"
+        },
+        {
+          "name": "correct_android_app_name",
+          "type": "contains",
+          "description": "Filters by correct Android app_name (Fenix or similar)",
+          "check": "query.sql contains app_name filter for Android product"
+        },
+        {
+          "name": "has_partition_filter",
+          "type": "contains",
+          "description": "Includes submission_date partition filter",
+          "check": "query.sql contains 'submission_date'"
+        }
+      ]
+    }
+  ]
+}

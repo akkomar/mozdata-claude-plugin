@@ -1,0 +1,12 @@
+{
+  "eval_id": 1,
+  "run_id": "dau-query-with_skill",
+  "configuration": "with_skill",
+  "expectations": [
+    {"text": "uses_active_users_aggregates", "passed": true, "evidence": "Query uses `moz-fx-data-shared-prod.telemetry.active_users_aggregates`"},
+    {"text": "filters_app_name", "passed": true, "evidence": "Query contains `app_name = 'Firefox Desktop'`"},
+    {"text": "uses_submission_date", "passed": true, "evidence": "Query uses `submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)`"},
+    {"text": "uses_sum_dau", "passed": true, "evidence": "Query uses `SUM(dau) AS dau`"},
+    {"text": "correct_terminology", "passed": true, "evidence": "Response says 'Daily Active Clients' and 'client profiles, not individual users'"}
+  ]
+}

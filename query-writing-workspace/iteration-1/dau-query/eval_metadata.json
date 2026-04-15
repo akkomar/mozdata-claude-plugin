@@ -1,0 +1,12 @@
+{
+  "eval_id": 1,
+  "eval_name": "dau-query",
+  "prompt": "Write me query to get Firefox DAU",
+  "assertions": [
+    {"name": "uses_active_users_aggregates", "description": "Uses the official source-of-truth table active_users_aggregates"},
+    {"name": "filters_app_name", "description": "Filters by app_name for Firefox Desktop"},
+    {"name": "uses_submission_date", "description": "Uses submission_date (DATE) partition filter, not submission_timestamp"},
+    {"name": "uses_sum_dau", "description": "Uses SUM(dau) for aggregation, not COUNT DISTINCT client_id"},
+    {"name": "correct_terminology", "description": "Says clients/profiles not users when referring to counted entities"}
+  ]
+}

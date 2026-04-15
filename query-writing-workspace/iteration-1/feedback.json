@@ -1,0 +1,35 @@
+{
+  "reviews": [
+    {
+      "run_id": "dau-query-with_skill",
+      "feedback": "LGTM",
+      "timestamp": "2026-04-15T15:48:39.020Z"
+    },
+    {
+      "run_id": "dau-query-without_skill",
+      "feedback": "Incorrect",
+      "timestamp": "2026-04-15T15:48:39.020Z"
+    },
+    {
+      "run_id": "event-analysis-with_skill",
+      "feedback": "Good, uses events stream and sample",
+      "timestamp": "2026-04-15T15:48:39.020Z"
+    },
+    {
+      "run_id": "event-analysis-without_skill",
+      "feedback": "Wrong, should use events stream",
+      "timestamp": "2026-04-15T15:48:39.020Z"
+    },
+    {
+      "run_id": "ambiguous-request-with_skill",
+      "feedback": "OK",
+      "timestamp": "2026-04-15T15:48:39.020Z"
+    },
+    {
+      "run_id": "ambiguous-request-without_skill",
+      "feedback": "Inefficient, should use active_users_aggregates",
+      "timestamp": "2026-04-15T15:48:39.020Z"
+    }
+  ],
+  "status": "in_progress"
+}

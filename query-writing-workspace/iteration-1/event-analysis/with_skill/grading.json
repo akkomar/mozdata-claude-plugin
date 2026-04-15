@@ -1,0 +1,12 @@
+{
+  "eval_id": 2,
+  "run_id": "event-analysis-with_skill",
+  "configuration": "with_skill",
+  "expectations": [
+    {"text": "uses_events_stream", "passed": true, "evidence": "Query uses `mozdata.firefox_desktop.events_stream`"},
+    {"text": "filters_event_category", "passed": true, "evidence": "Query contains `event_category = 'activity_stream'`"},
+    {"text": "has_partition_filter", "passed": true, "evidence": "Query has `DATE(submission_timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)`"},
+    {"text": "has_country_dimension", "passed": true, "evidence": "Query uses `normalized_country_code AS country` in SELECT and GROUP BY"},
+    {"text": "has_sample_id", "passed": true, "evidence": "Query includes `sample_id = 0` with comment explaining it's for development"}
+  ]
+}
