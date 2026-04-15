@@ -4,7 +4,7 @@
 
 ```
 Level 1: Pre-aggregated tables (significantly faster, major cost savings)
-  → active_users_aggregates (DAU/MAU by dimensions)
+  → moz-fx-data-shared-prod.telemetry.active_users_aggregates (DAU/MAU/WAU — Single Source of Truth)
   → mobile_search_clients_daily (mobile search)
 
 Level 2: Client-daily tables (significantly faster depending on query)
@@ -21,23 +21,30 @@ Level 3: Raw ping tables (slowest, most expensive — avoid for aggregations)
 
 ### 1. User Counting (DAU/MAU/WAU)
 
-If query needs DAU/MAU/WAU broken down by standard dimensions (country, channel, OS, version):
+For official DAU/MAU/WAU numbers, check the Confluence definition if Atlassian MCP is available:
+https://mozilla-hub.atlassian.net/wiki/spaces/DATA/pages/314704478
+
+The Single Source of Truth for DAU is the unified table, filtered by app_name:
 ```
-USE: mozdata.{product}_derived.active_users_aggregates_v3
-WHY: Significantly faster, major cost reduction
-EXAMPLE: DAU by country for Firefox Desktop
+USE: moz-fx-data-shared-prod.telemetry.active_users_aggregates
+FILTER: app_name = 'Firefox Desktop' (or 'Fenix', 'Firefox iOS', etc.)
+COLUMNS: dau, wau, mau (pre-calculated integers)
+WHY: Pre-aggregated, not affected by shredding, change-controlled
 ```
 
-If query needs custom dimensions or client-level analysis:
+DAU 28-Day Moving Average (standard KPI reporting):
+```sql
+AVG(SUM(dau)) OVER (ORDER BY submission_date ASC ROWS BETWEEN 27 PRECEDING AND CURRENT ROW)
 ```
-FOR MAU/WAU/retention:
-  USE: mozdata.{product}.baseline_clients_last_seen
-  WHY: Bit patterns encode 28-day windows (scans 1 day instead of 28)
 
-FOR DAU or client-level daily metrics:
-  USE: mozdata.{product}.baseline_clients_daily
-  WHY: Pre-aggregates all pings per client per day (much faster than raw baseline)
+For client-level analysis (e.g., custom dimensions, joining with other tables):
 ```
+USE: moz-fx-data-shared-prod.telemetry.active_users (client-level, has is_dau/is_wau/is_mau booleans)
+OR: mozdata.{product}.baseline_clients_last_seen (bit patterns for MAU/WAU/retention)
+OR: mozdata.{product}.baseline_clients_daily (daily per-client metrics)
+```
+
+Note: client-level tables are subject to shredding — DAU counts will be lower than active_users_aggregates for older dates. See Confluence docs for details.
 
 Do not query raw baseline table for DAU unless you have a specific reason.
 

@@ -156,8 +156,7 @@ Linking via fx_accounts ping:
    - `sample_id = 0` gives consistent 1% sample across all queries
 
 5. Query costs
-   - BigQuery charges $5 per terabyte scanned
-   - Unfiltered queries on large tables can cost hundreds of dollars
+   - Unfiltered queries on large tables can be expensive
    - Test with LIMIT and sample_id before removing limits
 
 6. Local bigquery-etl repo (if available)

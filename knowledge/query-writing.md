@@ -58,42 +58,56 @@ FROM mozdata.firefox_desktop.metrics
 
 ## Query Templates
 
-### DAU by Dimensions (FASTEST — use active_users_aggregates)
+### DAU/MAU/WAU (use active_users_aggregates — Single Source of Truth)
+
+Check the Confluence DAU definition if Atlassian MCP is available:
+https://mozilla-hub.atlassian.net/wiki/spaces/DATA/pages/314704478
 
 ```sql
--- Pre-aggregated DAU/MAU by country, channel, version
--- COST: ~$0.05, SPEED: ~1 second
+-- Official DAU with 28-day moving average (standard KPI reporting)
+-- Source of truth: unified table, filtered by app_name
 SELECT
   submission_date,
-  country,
-  app_version,
-  SUM(dau) AS daily_users,
-  SUM(wau) AS weekly_users,
-  SUM(mau) AS monthly_users
+  SUM(dau) AS dau,
+  SUM(wau) AS wau,
+  SUM(mau) AS mau,
+  AVG(SUM(dau)) OVER (
+    ORDER BY submission_date ASC
+    ROWS BETWEEN 27 PRECEDING AND CURRENT ROW
+  ) AS dau_28ma
 FROM
-  mozdata.firefox_desktop_derived.active_users_aggregates_v3
+  `moz-fx-data-shared-prod.telemetry.active_users_aggregates`
 WHERE
-  submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
-  AND channel = 'release'
-GROUP BY submission_date, country, app_version
-ORDER BY submission_date DESC
+  app_name = 'Firefox Desktop'
+  AND submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 60 DAY)
+GROUP BY submission_date
+ORDER BY submission_date
 ```
 
-### DAU Basic Count (FAST — use baseline_clients_daily)
+For mobile DAU, filter by multiple app_names:
+```sql
+WHERE app_name IN ('Fenix', 'Firefox iOS', 'Focus Android', 'Focus iOS')
+```
+
+To break down by dimensions (country, channel, OS, etc.), add them to SELECT and GROUP BY — the table has these pre-aggregated.
+
+### Client-level user counting (use active_users or baseline_clients_daily)
+
+Use client-level tables when you need custom dimensions or joins not available in active_users_aggregates. Note: client-level tables are subject to shredding, so counts will be lower than active_users_aggregates for older dates.
 
 ```sql
--- Count daily active clients — one row per client per day
--- COST: ~$0.10, SPEED: ~2 seconds (much faster than raw baseline)
+-- Client-level DAU using active_users (has is_dau/is_wau/is_mau booleans)
 SELECT
   submission_date,
-  COUNT(DISTINCT client_id) AS dau
+  COUNTIF(is_dau) AS dau,
+  COUNTIF(is_wau) AS wau,
+  COUNTIF(is_mau) AS mau
 FROM
-  mozdata.firefox_desktop.baseline_clients_daily
+  `moz-fx-data-shared-prod.telemetry.active_users`
 WHERE
-  submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
-  AND normalized_channel = 'release'
+  submission_date = DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+  AND app_name = 'Firefox Desktop'
 GROUP BY submission_date
-ORDER BY submission_date DESC
 ```
 
 ### MAU/Retention (BEST — use baseline_clients_last_seen with bit patterns)
@@ -101,7 +115,6 @@ ORDER BY submission_date DESC
 ```sql
 -- MAU/WAU calculation using 28-day bit patterns
 -- Scans only 1 day to get 28-day window
--- COST: ~$0.01, SPEED: <1 second
 SELECT
   submission_date,
   COUNT(DISTINCT CASE WHEN days_seen_bits > 0 THEN client_id END) AS mau,
@@ -120,7 +133,6 @@ GROUP BY submission_date
 ```sql
 -- Event funnel analysis — events already flattened
 -- Clustered by event_category for speed
--- COST: ~$0.20, SPEED: ~2 seconds (much faster than raw events_v1)
 SELECT
   event_category,
   event_name,
@@ -141,7 +153,6 @@ LIMIT 100
 
 ```sql
 -- Mobile search volume by engine
--- COST: ~$0.02, SPEED: ~1 second (much faster than raw metrics)
 SELECT
   submission_date,
   search_engine,
@@ -207,12 +218,13 @@ FROM mozdata.firefox_desktop.baseline
 WHERE DATE(submission_timestamp) = '2025-10-13'
 ```
 
-Use baseline_clients_daily instead:
+Use the official source-of-truth table instead:
 ```sql
--- GOOD: Pre-aggregated, ~$0.10 instead of ~$10
-SELECT COUNT(DISTINCT client_id)
-FROM mozdata.firefox_desktop.baseline_clients_daily
+-- GOOD: Pre-aggregated, official DAU definition
+SELECT SUM(dau)
+FROM `moz-fx-data-shared-prod.telemetry.active_users_aggregates`
 WHERE submission_date = '2025-10-13'
+  AND app_name = 'Firefox Desktop'
 ```
 
 Don't scan 28 days for MAU (scans 28 days instead of 1):

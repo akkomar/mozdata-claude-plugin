@@ -72,20 +72,20 @@ I found several accessibility-related metrics in Firefox Desktop:
 <example>
 <user-request>How do I count Firefox Desktop daily active users by country?</user-request>
 <response>
-**Table Choice**: Using `mozdata.firefox_desktop_derived.active_users_aggregates_v3` because DAU is already pre-aggregated by country — no need to count distinct clients.
+Using `moz-fx-data-shared-prod.telemetry.active_users_aggregates` — the Single Source of Truth for DAU, filtered by `app_name`. See [DAU Confluence docs](https://mozilla-hub.atlassian.net/wiki/spaces/DATA/pages/314704478) for the full definition.
 
 ```sql
 SELECT
   submission_date,
   country,
   SUM(dau) AS daily_active_clients
-FROM mozdata.firefox_desktop_derived.active_users_aggregates_v3
-WHERE submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
-  AND channel = 'release'
+FROM `moz-fx-data-shared-prod.telemetry.active_users_aggregates`
+WHERE app_name = 'Firefox Desktop'
+  AND submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
 GROUP BY submission_date, country
 ORDER BY submission_date DESC, daily_active_clients DESC
 ```
 
-**Customization**: Add `app_version` to GROUP BY for version breakdown. Change `channel` filter for beta/nightly.
+Add `app_version` or `channel` to GROUP BY for further breakdowns.
 </response>
 </example>

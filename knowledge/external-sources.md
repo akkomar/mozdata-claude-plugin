@@ -2,10 +2,14 @@
 
 ## Confluence (via Atlassian MCP)
 
-Mozilla's Confluence (mozilla-hub.atlassian.net) contains metric definitions, operational runbooks, and team documentation that complement the static knowledge in this plugin. When answering questions about business metrics or calculation logic, check Confluence before making assumptions.
+Mozilla's Confluence (mozilla-hub.atlassian.net) contains metric definitions, operational runbooks, and team documentation that complement the static knowledge in this plugin.
+
+For questions about KPI metrics (DAU, MAU, WAU, retention, engagement) or their calculation logic, look up the Confluence definition before writing a query if the Atlassian MCP server is available. If Confluence is not accessible, use the knowledge bundled in this plugin.
 
 Key pages:
-- DAU metric definition and calculation: https://mozilla-hub.atlassian.net/wiki/spaces/DATA/pages/314704478
+- DAU metric definition, source-of-truth table, and calculation guidance: https://mozilla-hub.atlassian.net/wiki/spaces/DATA/pages/314704478
+- Calculating DAU and related metrics (query examples): https://mozilla-hub.atlassian.net/wiki/spaces/DATA/pages/834175096
+- Querying Firefox Retention and Engagement: https://mozilla-hub.atlassian.net/wiki/spaces/DATA/pages/842629837
 
 Search the DATA space for metric definitions and documentation:
 ```
