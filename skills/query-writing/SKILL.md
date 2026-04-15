@@ -4,7 +4,7 @@ description: >
   Write efficient BigQuery queries for Mozilla telemetry. Use when user asks about:
   Firefox DAU/MAU, telemetry queries, BigQuery Mozilla, baseline_clients,
   events_stream, search metrics, user counts, or Firefox data analysis.
-allowed-tools: WebFetch, mcp__dataHub__search, mcp__dataHub__get_entities, mcp__dataHub__list_schema_fields, mcp__bigquery__execute_sql, mcp__bigquery__list_dataset_ids, mcp__bigquery__list_table_ids, mcp__bigquery__get_table_info, mcp__bigquery__get_dataset_info, Bash(bq show:*)
+allowed-tools: mcp__dataHub__search, mcp__dataHub__get_entities, mcp__dataHub__list_schema_fields, mcp__bigquery__execute_sql, mcp__bigquery__list_dataset_ids, mcp__bigquery__list_table_ids, mcp__bigquery__get_table_info, mcp__bigquery__get_dataset_info, mcp__atlassian__searchConfluenceUsingCql, mcp__atlassian__getConfluencePage, Bash(bq show:*)
 ---
 
 # Mozilla BigQuery Query Writing
@@ -12,6 +12,7 @@ allowed-tools: WebFetch, mcp__dataHub__search, mcp__dataHub__get_entities, mcp__
 @knowledge/data-catalog.md
 @knowledge/query-writing.md
 @knowledge/architecture.md
+@knowledge/external-sources.md
 
 ## Guardrails
 

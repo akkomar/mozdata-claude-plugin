@@ -65,7 +65,8 @@ mozdata-claude-plugin/
 │   ├── architecture.md        # Data platform architecture
 │   ├── metrics.md             # Metric/probe discovery
 │   ├── data-catalog.md        # Table discovery
-│   └── query-writing.md       # Query best practices
+│   ├── query-writing.md       # Query best practices
+│   └── external-sources.md    # Confluence, UDF discovery, app discovery
 ├── commands/
 │   └── ask.md                 # Slash command (refs @knowledge/*)
 ├── skills/
@@ -94,6 +95,7 @@ The plugin's intelligence is organized into four shared knowledge modules:
 | `metrics.md` | ProbeInfo API, Glean Dictionary, metric types |
 | `data-catalog.md` | Table selection, aggregation hierarchy |
 | `query-writing.md` | Required filters, templates, anti-patterns |
+| `external-sources.md` | Confluence, UDF discovery, app/channel discovery |
 
 Both the slash command and Skills reference these modules for consistent knowledge.
 
@@ -238,6 +240,18 @@ claude mcp list
 ```
 
 The BigQuery connection includes read-only access to all datasets and write access restricted to `mozdata.analysis` and `mozdata.tmp` datasets only (enforced by the MCP Toolbox via [`allowedDatasets` config](bigquery/tools.yaml)). If you skip this setup, the plugin can still help you write queries but won't be able to execute them.
+
+### Atlassian MCP Server
+
+Claude can optionally search Mozilla's Confluence for metric definitions, operational runbooks, and team documentation. This is useful when answering questions about business metrics or calculation logic.
+
+#### Setup
+
+```bash
+claude mcp add --transport sse --scope user atlassian https://mcp.atlassian.com/v1/sse
+```
+
+You'll be prompted to authenticate via browser on first use. Once authenticated, Claude can search the DATA space in Confluence for metric documentation.
 
 ### Keeping the Plugin Updated
 

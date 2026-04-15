@@ -11,6 +11,7 @@ allowed-tools: WebFetch, Read, mcp__glean-dictionary__list_apps, mcp__glean-dict
 
 @knowledge/metrics.md
 @knowledge/architecture.md
+@knowledge/external-sources.md
 
 ## Workflow
 
