@@ -280,33 +280,57 @@ WHERE DATE(submission_timestamp) >= '2025-01-01'
 
 ## Using mozfun UDFs
 
-Mozilla provides public UDFs for common operations:
+Signatures for commonly used UDFs (source: `mozfun.region-us.INFORMATION_SCHEMA`):
 
 Histogram functions:
 ```sql
--- Extract histogram values
-SELECT mozfun.hist.extract(histogram_field).sum
-FROM table
+-- Extract histogram struct (access .sum, .count, etc.)
+mozfun.hist.extract(input STRING)
 
--- Calculate percentiles
+-- Merge array of histograms into one
+mozfun.hist.merge(histogram_list ANY TYPE)
+
+-- Calculate percentiles from a histogram
+mozfun.hist.percentiles(histogram ANY TYPE, percentiles ARRAY<FLOAT64>)
+  → ARRAY<STRUCT<percentile FLOAT64, value INT64>>
+
+-- Get mean value from a histogram
+mozfun.hist.mean(histogram ANY TYPE)
+```
+
+Example — percentiles from a histogram column:
+```sql
 SELECT mozfun.hist.percentiles(
   mozfun.hist.merge(ARRAY_AGG(histogram_field)),
   [0.5, 0.95, 0.99]
 ) AS percentiles
+FROM table
 ```
 
 Map/struct access:
 ```sql
-SELECT mozfun.map.get_key(struct_field, 'key_name')
+-- Get value for a key from a map (ARRAY<STRUCT<key, value>>)
+mozfun.map.get_key(map ANY TYPE, k ANY TYPE)
 ```
 
 Bit pattern functions (for clients_last_seen):
 ```sql
--- Check if active in specific date range
-SELECT mozfun.bits28.active_in_range(days_seen_bits, start_offset, num_days)
+-- Check if active in a date range within the 28-day window
+mozfun.bits28.active_in_range(bits INT64, start_offset INT64, n_bits INT64) → BOOL
+
+-- Days since last activity (0 = today)
+mozfun.bits28.days_since_seen(bits INT64) → INT64
+```
+
+Version parsing:
+```sql
+-- Extract major version number from version string
+mozfun.norm.extract_version(version_string STRING, extraction_level STRING) → NUMERIC
+-- extraction_level: 'major', 'minor', 'patch'
 ```
 
 Full UDF reference: https://mozilla.github.io/bigquery-etl/mozfun/
+For UDFs not listed here, discover via `SELECT routine_name FROM mozfun.INFORMATION_SCHEMA.ROUTINES WHERE routine_schema = '{dataset}'`
 
 ## Constraints
 

@@ -6,14 +6,14 @@ The Glean Dictionary MCP server (`mcp__glean-dictionary__*` tools) is the primar
 
 Common Mozilla products and their naming conventions:
 
-| Product | ProbeInfo API (v1_name) | Glean Dictionary | BigQuery Dataset |
-|---------|------------------------|------------------|------------------|
-| Firefox Desktop | `firefox-desktop` | `firefox_desktop` | `firefox_desktop` |
-| Firefox Android | `fenix` | `fenix` | `fenix` (all channels) or `org_mozilla_firefox` (release) |
-| Firefox iOS | `firefox-ios` | `firefox_ios` | `firefox_ios` |
-| Focus Android | `focus-android` | `focus_android` | `focus_android` |
-| Focus iOS | `focus-ios` | `focus_ios` | `focus_ios` |
-| Thunderbird | `thunderbird-desktop` | `thunderbird_desktop` | `thunderbird_desktop` |
+| Product | ProbeInfo API | Glean Dictionary | BigQuery Dataset | Per-channel datasets |
+|---------|---------------|------------------|------------------|---------------------|
+| Firefox Desktop | `firefox-desktop` | `firefox_desktop` | `firefox_desktop` | Single dataset, no per-channel split |
+| Firefox Android | `fenix` | `fenix` | `fenix` (all channels) | `org_mozilla_firefox` (release), `org_mozilla_firefox_beta` (beta), `org_mozilla_fenix` (nightly) |
+| Firefox iOS | `firefox-ios` | `firefox_ios` | `firefox_ios` (all channels) | `org_mozilla_ios_firefox` (release), `org_mozilla_ios_firefoxbeta` (beta), `org_mozilla_ios_fennec` (nightly) |
+| Focus Android | `focus-android` | `focus_android` | `focus_android` | |
+| Focus iOS | `focus-ios` | `focus_ios` | `focus_ios` | |
+| Thunderbird | `thunderbird-desktop` | `thunderbird_desktop` | `thunderbird_desktop` | |
 
 Naming rules:
 - ProbeInfo API: Use kebab-case (e.g., `firefox-desktop`)
@@ -59,7 +59,7 @@ Determining scheduling:
    - `crash`, `event_found` → event-driven (immediate)
    - `component_init` → feature usage (sporadic)
 
-## Glean Dictionary URLs
+## Glean Dictionary URLs (for linking to users)
 
 URL pattern:
 ```
