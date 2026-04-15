@@ -37,7 +37,17 @@ For questions that span multiple areas (e.g., "find me the DAU metric and write 
 
 ## Optional Setup
 
-The plugin works out of the box with the bundled Glean Dictionary MCP server. The following optional MCP servers unlock additional capabilities.
+The plugin works out of the box with the bundled Glean Dictionary MCP server. The following optional setup unlocks additional capabilities.
+
+### Auto-approve plugin file reads
+
+The plugin's skills reference knowledge files that Claude reads on demand. Depending on your permission settings, you may be prompted to approve each read. To auto-approve, add this permission rule:
+
+```
+/permissions
+→ Add a new rule
+→ Read(~/.claude/plugins/cache/akomar-mozdata-marketplace/mozdata/**)
+```
 
 The airflow-debugging skill requires `gcloud` authentication and access to `gs://airflow-remote-logs-prod-prod`. It only activates when relevant.
 
