@@ -1,34 +1,34 @@
 # Table Discovery & Data Catalog
 
-## The Aggregation Hierarchy - ALWAYS START FROM TOP
+## Aggregation Hierarchy
 
 ```
-Level 1: PRE-AGGREGATED TABLES (significantly faster, major cost savings)
+Level 1: Pre-aggregated tables (significantly faster, major cost savings)
   → active_users_aggregates (DAU/MAU by dimensions)
   → mobile_search_clients_daily (mobile search)
 
-Level 2: CLIENT-DAILY TABLES (significantly faster depending on query)
+Level 2: Client-daily tables (significantly faster depending on query)
   → baseline_clients_daily (daily per-client baseline metrics, much faster for user counts)
   → baseline_clients_last_seen (28-day windows, scans 1 day instead of 28 for MAU)
 
-Level 3: RAW PING TABLES (slowest, most expensive - avoid for aggregations)
+Level 3: Raw ping tables (slowest, most expensive — avoid for aggregations)
   → baseline (raw baseline pings)
   → metrics (raw metrics pings)
-  → events (raw events pings - use events_stream instead!)
+  → events (raw events pings — use events_stream instead)
 ```
 
 ## Table Selection Decision Tree
 
 ### 1. User Counting (DAU/MAU/WAU)
 
-**If query needs DAU/MAU/WAU broken down by standard dimensions** (country, channel, OS, version):
+If query needs DAU/MAU/WAU broken down by standard dimensions (country, channel, OS, version):
 ```
 USE: mozdata.{product}_derived.active_users_aggregates_v3
-SPEEDUP: Significantly faster, major cost reduction
+WHY: Significantly faster, major cost reduction
 EXAMPLE: DAU by country for Firefox Desktop
 ```
 
-**If query needs custom dimensions OR client-level analysis:**
+If query needs custom dimensions or client-level analysis:
 ```
 FOR MAU/WAU/retention:
   USE: mozdata.{product}.baseline_clients_last_seen
@@ -39,35 +39,35 @@ FOR DAU or client-level daily metrics:
   WHY: Pre-aggregates all pings per client per day (much faster than raw baseline)
 ```
 
-**NEVER query raw baseline table for DAU unless you have a specific reason!**
+Do not query raw baseline table for DAU unless you have a specific reason.
 
 ### 2. Event Analysis
 
-**ALWAYS use events_stream for event queries:**
+Use events_stream for event queries:
 ```
 USE: mozdata.{product}.events_stream
 WHY: Events pre-unnested, clustered by event_category (much faster)
 RAW ALTERNATIVE: {product}_stable.events_v1 (requires UNNEST, not clustered)
 ```
 
-**Event data flow (important):**
+Event data flow:
 ```
 Client → events ping → {product}_stable.events_v1 (ARRAY field) →
   [glean_usage generator] → {product}_derived.events_stream_v1 (flattened) →
-  mozdata.{product}.events_stream (view - USE THIS!)
+  mozdata.{product}.events_stream (view — use this)
 ```
 
-**Note:** Events are sent in the **events ping**, NOT the metrics ping.
+Events are sent in the events ping, not the metrics ping.
 
 ### 3. Search Metrics
 
-**For mobile search (Android/iOS):**
+For mobile search (Android/iOS):
 ```
 USE: mozdata.search.mobile_search_clients_daily_v2
-SPEEDUP: Much faster than raw metrics
+WHY: Much faster than raw metrics
 ```
 
-**For desktop SERP (Search Engine Results Page) analysis:**
+For desktop SERP (Search Engine Results Page) analysis:
 ```
 USE: mozdata.firefox_desktop_derived.serp_events_v2
 WHY: Pre-processed SERP impressions and engagement tracking
@@ -75,14 +75,14 @@ WHY: Pre-processed SERP impressions and engagement tracking
 
 ### 4. Session/Engagement Analysis
 
-**For daily session metrics per client:**
+For daily session metrics per client:
 ```
 USE: mozdata.{product}.baseline_clients_daily
 FIELDS: durations, active_hours_sum, days_seen_session_start_bits
 WHY: All sessions per client per day pre-aggregated
 ```
 
-**For individual session data:**
+For individual session data:
 ```
 USE: mozdata.{product}.baseline (raw)
 WHY: Need ping-level granularity (multiple pings per day)
@@ -90,16 +90,16 @@ WHY: Need ping-level granularity (multiple pings per day)
 
 ### 5. Retention/Cohort Analysis
 
-**For retention calculations:**
+For retention calculations:
 ```
 USE: mozdata.{product}.baseline_clients_last_seen
 KEY FIELDS:
   - days_seen_bits (28-bit pattern: 1 = active that day)
   - days_active_bits (28-bit pattern: 1 = had duration > 0)
-SPEEDUP: Scans 1 day instead of 28 days
+WHY: Scans 1 day instead of 28 days
 ```
 
-**For cohort analysis:**
+For cohort analysis:
 ```
 USE: mozdata.{product}.baseline_clients_first_seen (JOIN) baseline_clients_daily
 WHY: first_seen has attribution, clients_daily has daily behavior
@@ -107,7 +107,7 @@ WHY: first_seen has attribution, clients_daily has daily behavior
 
 ### 6. Mobile KPIs
 
-**For mobile products** (Fenix, Focus, Firefox iOS):
+For mobile products (Fenix, Focus, Firefox iOS):
 ```
 Retention: mozdata.{product}_derived.retention_clients
 Engagement: mozdata.{product}_derived.engagement_clients
@@ -117,7 +117,7 @@ New Profiles: mozdata.{product}_derived.new_profile_clients
 
 ### 7. When to Use Raw Tables
 
-**Use raw ping tables ONLY when:**
+Use raw ping tables only when:
 - Need individual ping timestamps/metadata
 - Debugging specific ping issues
 - Need fields not preserved in aggregates
@@ -125,19 +125,7 @@ New Profiles: mozdata.{product}_derived.new_profile_clients
 - Real-time/streaming analysis (very recent data)
 - Exploring brand new metrics not yet in aggregates
 
-## Key Aggregate Tables Reference
-
-| Table | Purpose | Speedup |
-|-------|---------|---------|
-| `{product}_derived.active_users_aggregates_v3` | DAU/MAU by dimensions | Significantly faster |
-| `{product}.baseline_clients_daily` | Daily per-client metrics | Significantly faster |
-| `{product}.baseline_clients_last_seen` | 28-day windows, retention | Scans 1 day not 28 |
-| `{product}.events_stream` | Event analysis | Much faster |
-| `search.mobile_search_clients_daily_v2` | Mobile search | Much faster |
-
 ## Deprecated & Obsolete Tables
-
-**WARNING: Avoid these tables—use modern replacements:**
 
 | Deprecated | Status | Replacement | Notes |
 |-----------|--------|-------------|-------|
@@ -147,9 +135,9 @@ New Profiles: mozdata.{product}_derived.new_profile_clients
 | `org_mozilla_fennec_aurora.*` | Unmaintained | `fenix.*` | Old Firefox Android build |
 | `org_mozilla_ios_fennec.*` | Unmaintained | `firefox_ios.*` | Old Firefox iOS build |
 
-**Full deprecated datasets list:** https://docs.telemetry.mozilla.org/datasets/obsolete.html
+Full deprecated datasets list: https://docs.telemetry.mozilla.org/datasets/obsolete.html
 
-**Detecting deprecated tables:**
+Detecting deprecated tables:
 1. Check DataHub for last modification date
 2. If last updated >6 months ago with no activity, likely deprecated
 3. Search for modern equivalent: `mcp__dataHub__search(query="/q {product_name}")`
@@ -157,40 +145,30 @@ New Profiles: mozdata.{product}_derived.new_profile_clients
 
 ## Using DataHub MCP for Table Discovery
 
-**Search for tables:**
+Search for tables:
 ```
 mcp__dataHub__search(query="/q {table_name}", filters={"entity_type": ["dataset"]})
 ```
 
-**Get detailed schema:**
+Get detailed schema:
 ```
 mcp__dataHub__get_entities(urns=["urn:li:dataset:..."])
 ```
 
-**For large schemas, list specific fields:**
+For large schemas, list specific fields:
 ```
 mcp__dataHub__list_schema_fields(urn="...", keywords=["user", "client"])
 ```
 
-**DataHub provides:**
+DataHub provides:
 - Complete table schemas with field types
 - Column descriptions and documentation
 - Lineage (upstream/downstream dependencies)
 - Last modified dates (useful for detecting deprecated tables)
 
-**Fallback if DataHub unavailable:**
+Fallback if DataHub unavailable:
 - Use `bq show --schema mozdata:{dataset}.{table}`
 
-**For derived table SQL logic:**
+For derived table SQL logic:
 - Check bigquery-etl repo: https://github.com/mozilla/bigquery-etl
-- Note: Raw ping tables are NOT in repo (auto-generated from Glean schemas)
-
-## Quick Reference - What's Where
-
-| Information Type | Primary Source | Secondary Source |
-|-----------------|----------------|------------------|
-| Table schemas | DataHub MCP | BigQuery Console, `bq show` |
-| Raw ping tables | Auto-generated from Glean | NOT in bigquery-etl |
-| Derived table logic | bigquery-etl repo | - |
-| Query examples | bigquery-etl docs | Official cookbooks |
-| Cross-product info | DataHub lineage | - |
+- Raw ping tables are not in repo (auto-generated from Glean schemas)

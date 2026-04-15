@@ -2,10 +2,10 @@
 
 ## Required Filters (Cost & Performance)
 
-### 1. ALWAYS filter on partition key
+### 1. Filter on partition key
 
 ```sql
--- CORRECT - Uses DATE() for partition pruning
+-- Uses DATE() for partition pruning
 WHERE DATE(submission_timestamp) >= '2025-01-01'
   AND DATE(submission_timestamp) <= '2025-01-31'
 
@@ -13,25 +13,25 @@ WHERE DATE(submission_timestamp) >= '2025-01-01'
 WHERE DATE(submission_timestamp) = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
 ```
 
-**Why:** Tables are partitioned by `submission_timestamp`. Without this filter, BigQuery scans ALL data (terabytes), costing $$$ and causing errors.
+Tables are partitioned by `submission_timestamp`. Without this filter, BigQuery scans all data (terabytes), costing $$$ and causing errors.
 
 ### 2. Partition Field Types (DATE vs TIMESTAMP)
 
-**Aggregate tables use DATE fields:**
+Aggregate tables use DATE fields:
 ```sql
 -- Tables: baseline_clients_daily, baseline_clients_last_seen, active_users_aggregates
 WHERE submission_date = '2025-10-13'
 WHERE submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
 ```
 
-**Raw ping tables use TIMESTAMP fields:**
+Raw ping tables use TIMESTAMP fields:
 ```sql
 -- Tables: baseline, metrics, events, events_stream
 WHERE DATE(submission_timestamp) = '2025-10-13'
 WHERE DATE(submission_timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
 ```
 
-**Rule:** If table name contains "clients_daily" or "clients_last_seen" or "aggregates", use `submission_date`. Otherwise, use `DATE(submission_timestamp)`.
+Rule: If table name contains "clients_daily" or "clients_last_seen" or "aggregates", use `submission_date`. Otherwise, use `DATE(submission_timestamp)`.
 
 ### 3. Use sample_id for development
 
@@ -40,9 +40,9 @@ WHERE sample_id = 0    -- 1% sample (sample_id ranges 0-99)
 WHERE sample_id < 10   -- 10% sample
 ```
 
-**Why:** `sample_id` is calculated as `crc32(client_id) % 100`. It provides consistent sampling and is a clustering key (fast).
+`sample_id` is calculated as `crc32(client_id) % 100`. It provides consistent sampling and is a clustering key (fast).
 
-### 4. Avoid SELECT * - specify columns
+### 4. Avoid SELECT * — specify columns
 
 ```sql
 -- BAD - Scans all nested fields
@@ -58,7 +58,7 @@ FROM mozdata.firefox_desktop.metrics
 
 ## Query Templates
 
-### DAU by Dimensions (FASTEST - use active_users_aggregates)
+### DAU by Dimensions (FASTEST — use active_users_aggregates)
 
 ```sql
 -- Pre-aggregated DAU/MAU by country, channel, version
@@ -79,10 +79,10 @@ GROUP BY submission_date, country, app_version
 ORDER BY submission_date DESC
 ```
 
-### DAU Basic Count (FAST - use baseline_clients_daily)
+### DAU Basic Count (FAST — use baseline_clients_daily)
 
 ```sql
--- Count daily active clients - ONE ROW PER CLIENT PER DAY
+-- Count daily active clients — one row per client per day
 -- COST: ~$0.10, SPEED: ~2 seconds (much faster than raw baseline)
 SELECT
   submission_date,
@@ -96,11 +96,11 @@ GROUP BY submission_date
 ORDER BY submission_date DESC
 ```
 
-### MAU/Retention (BEST - use baseline_clients_last_seen with bit patterns)
+### MAU/Retention (BEST — use baseline_clients_last_seen with bit patterns)
 
 ```sql
 -- MAU/WAU calculation using 28-day bit patterns
--- SCANS ONLY 1 DAY to get 28-day window
+-- Scans only 1 day to get 28-day window
 -- COST: ~$0.01, SPEED: <1 second
 SELECT
   submission_date,
@@ -115,11 +115,11 @@ WHERE
 GROUP BY submission_date
 ```
 
-### Event Analysis (ALWAYS use events_stream)
+### Event Analysis (use events_stream)
 
 ```sql
--- Event funnel analysis - events already flattened!
--- NO UNNEST needed! Clustered by event_category for speed!
+-- Event funnel analysis — events already flattened
+-- Clustered by event_category for speed
 -- COST: ~$0.20, SPEED: ~2 seconds (much faster than raw events_v1)
 SELECT
   event_category,
@@ -180,7 +180,7 @@ ORDER BY submission_date DESC
 ### Labeled Counter from Metrics Ping (requires UNNEST)
 
 ```sql
--- When you DO need to query raw metrics ping for specific labeled counter
+-- When you need to query raw metrics ping for a specific labeled counter
 SELECT
   DATE(submission_timestamp) AS date,
   label.key AS label_name,
@@ -197,9 +197,9 @@ ORDER BY total_count DESC
 LIMIT 100
 ```
 
-## Critical Anti-Patterns to PREVENT
+## Anti-Patterns
 
-**DON'T: Count DAU from raw baseline pings (orders of magnitude slower)**
+Don't count DAU from raw baseline pings (orders of magnitude slower):
 ```sql
 -- BAD: Scanning millions of individual pings
 SELECT COUNT(DISTINCT client_info.client_id)
@@ -207,7 +207,7 @@ FROM mozdata.firefox_desktop.baseline
 WHERE DATE(submission_timestamp) = '2025-10-13'
 ```
 
-**DO: Use baseline_clients_daily**
+Use baseline_clients_daily instead:
 ```sql
 -- GOOD: Pre-aggregated, ~$0.10 instead of ~$10
 SELECT COUNT(DISTINCT client_id)
@@ -215,7 +215,7 @@ FROM mozdata.firefox_desktop.baseline_clients_daily
 WHERE submission_date = '2025-10-13'
 ```
 
-**DON'T: Scan 28 days for MAU (much slower — scans 28 days instead of 1)**
+Don't scan 28 days for MAU (scans 28 days instead of 1):
 ```sql
 -- BAD: Scanning 28 days of data
 SELECT COUNT(DISTINCT client_id)
@@ -223,7 +223,7 @@ FROM mozdata.firefox_desktop.baseline_clients_daily
 WHERE submission_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 28 DAY)
 ```
 
-**DO: Use baseline_clients_last_seen with bit patterns**
+Use baseline_clients_last_seen with bit patterns:
 ```sql
 -- GOOD: 28-day window encoded in bits, ~$0.01 instead of ~$0.50
 SELECT COUNT(DISTINCT CASE WHEN days_seen_bits > 0 THEN client_id END)
@@ -231,7 +231,7 @@ FROM mozdata.firefox_desktop.baseline_clients_last_seen
 WHERE submission_date = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
 ```
 
-**DON'T: Query raw events with manual UNNEST (much slower)**
+Don't query raw events with manual UNNEST (much slower):
 ```sql
 -- BAD: Requires UNNEST, not optimized for event queries
 SELECT event.category, COUNT(*)
@@ -240,7 +240,7 @@ FROM mozdata.firefox_desktop_stable.events_v1,
 WHERE DATE(submission_timestamp) = '2025-10-13'
 ```
 
-**DO: Use events_stream**
+Use events_stream:
 ```sql
 -- GOOD: Pre-flattened, clustered by event_category
 SELECT event_category, COUNT(*)
@@ -250,25 +250,25 @@ WHERE DATE(submission_timestamp) = '2025-10-13'
 
 ## Common Filters and Dimensions
 
-**Channel filtering:**
+Channel filtering:
 ```sql
 WHERE normalized_channel IN ('release', 'beta', 'nightly')
 ```
 
-**Country filtering:**
+Country filtering:
 ```sql
 WHERE normalized_country_code = 'US'
 -- or
 WHERE metadata.geo.country = 'US'
 ```
 
-**OS filtering:**
+OS filtering:
 ```sql
 WHERE normalized_os IN ('Windows', 'Linux', 'Darwin')
 -- Darwin = macOS
 ```
 
-**Date ranges:**
+Date ranges:
 ```sql
 -- Last 7 days
 WHERE DATE(submission_timestamp) >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
@@ -282,7 +282,7 @@ WHERE DATE(submission_timestamp) >= '2025-01-01'
 
 Mozilla provides public UDFs for common operations:
 
-**Histogram functions:**
+Histogram functions:
 ```sql
 -- Extract histogram values
 SELECT mozfun.hist.extract(histogram_field).sum
@@ -295,27 +295,27 @@ SELECT mozfun.hist.percentiles(
 ) AS percentiles
 ```
 
-**Map/struct access:**
+Map/struct access:
 ```sql
 SELECT mozfun.map.get_key(struct_field, 'key_name')
 ```
 
-**Bit pattern functions** (for clients_last_seen):
+Bit pattern functions (for clients_last_seen):
 ```sql
 -- Check if active in specific date range
 SELECT mozfun.bits28.active_in_range(days_seen_bits, start_offset, num_days)
 ```
 
-**Full UDF reference:** https://mozilla.github.io/bigquery-etl/mozfun/
+Full UDF reference: https://mozilla.github.io/bigquery-etl/mozfun/
 
-## Critical Constraints
+## Constraints
 
-- ALWAYS check for aggregate tables before suggesting raw tables
-- NEVER generate queries without partition filters (DATE(submission_timestamp) or submission_date)
-- NEVER call DAU/MAU counts "users" - use "clients" or "profiles"
-- NEVER suggest joining across products by client_id (separate namespaces)
-- ALWAYS include sample_id filter for development/testing queries
-- ALWAYS include cost/performance context when recommending tables
-- ALWAYS use events_stream for event queries (never raw events_v1)
-- ALWAYS use baseline_clients_last_seen for MAU calculations
-- ALWAYS write BigQuery-compatible SQL (GoogleSQL dialect) - prefer JOINs, CTEs, and window functions over complex correlated subqueries, as BigQuery can only execute correlated subqueries it can de-correlate into JOINs internally
+- Check for aggregate tables before suggesting raw tables
+- Do not generate queries without partition filters (DATE(submission_timestamp) or submission_date)
+- Do not call DAU/MAU counts "users" — use "clients" or "profiles"
+- Do not suggest joining across products by client_id (separate namespaces)
+- Include sample_id filter for development/testing queries
+- Include cost/performance context when recommending tables
+- Use events_stream for event queries (not raw events_v1)
+- Use baseline_clients_last_seen for MAU calculations
+- Write BigQuery-compatible SQL (GoogleSQL dialect) — prefer JOINs, CTEs, and window functions over complex correlated subqueries, as BigQuery can only execute correlated subqueries it can de-correlate into JOINs internally
