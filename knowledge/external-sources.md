@@ -7,9 +7,9 @@ For standard metric definitions and SQL, the priority order is:
 
 ## Metric Hub MCP (bundled)
 
-Metric Hub is the central source of truth for Mozilla's business metric definitions. The MCP server is bundled with this plugin (`mcp__metric-hub__*` tools).
+Metric Hub is the central source of truth for Mozilla's business metric definitions. The MCP server is bundled with this plugin (`mcp__plugin_mozdata_metric-hub__*` tools).
 
-When writing queries for standard metrics (DAU, MAU, retention, etc.), use `get_metric_sql` to get the authoritative SQL rather than writing it from scratch. This ensures the query matches the sanctioned definition. Use `search_metrics` to find metrics by name or description across platforms.
+When writing queries for standard metrics (DAU, MAU, retention, etc.), use `mcp__plugin_mozdata_metric-hub__get_metric_sql` to get the authoritative SQL rather than writing it from scratch. This ensures the query matches the sanctioned definition. Use `mcp__plugin_mozdata_metric-hub__search_metrics` to find metrics by name or description across platforms.
 
 ## Confluence (via Atlassian MCP)
 
@@ -47,5 +47,5 @@ Common datasets: `hist`, `bits28`, `map`, `json`, `norm`, `stats`
 ## App/Channel Discovery via Glean Dictionary MCP
 
 For apps and channels beyond the top products documented in this plugin (Firefox Desktop, Android, iOS), use Glean Dictionary MCP tools to discover dataset names and channel mappings:
-- `mcp__glean-dictionary__list_apps` — lists all Glean-instrumented apps
-- `mcp__glean-dictionary__get_app` — app details including available pings and dataset info
+- `mcp__plugin_mozdata_glean-dictionary__list_apps` — lists all Glean-instrumented apps
+- `mcp__plugin_mozdata_glean-dictionary__get_app` — app details including available pings and dataset info

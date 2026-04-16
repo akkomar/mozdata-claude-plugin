@@ -1,6 +1,6 @@
 # Metric/Probe Discovery
 
-The Glean Dictionary MCP server (`mcp__glean-dictionary__*` tools) is the primary source for metric and ping metadata — it provides server-side filtering and pagination. Use the ProbeInfo API below as a fallback when MCP tools don't have the data you need, or when you need the raw JSON.
+The Glean Dictionary MCP server (`mcp__plugin_mozdata_glean-dictionary__*` tools) is the primary source for metric and ping metadata — it provides server-side filtering and pagination. Use the ProbeInfo API below as a fallback when MCP tools don't have the data you need, or when you need the raw JSON.
 
 ## Product Naming Conventions
 

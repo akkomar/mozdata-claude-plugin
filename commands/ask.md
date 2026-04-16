@@ -18,9 +18,9 @@ For external sources (Metric Hub, Confluence, UDF discovery), see [external-sour
 
 1. Clarify the product — ask which Firefox/Mozilla product if not specified
 2. Search using Glean Dictionary MCP (preferred):
-   - `mcp__glean-dictionary__search_metrics` with app_name (snake_case, e.g., `firefox_desktop`)
+   - `mcp__plugin_mozdata_glean-dictionary__search_metrics` with app_name (snake_case, e.g., `firefox_desktop`)
    - Filter by query, type, include_expired as needed
-   - `mcp__glean-dictionary__get_metric` for full metric details
+   - `mcp__plugin_mozdata_glean-dictionary__get_metric` for full metric details
 3. For each relevant metric, provide:
    - Metric name and type
    - Description

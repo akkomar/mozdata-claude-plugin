@@ -17,11 +17,11 @@ For external sources (Metric Hub, Confluence, app discovery), see [external-sour
 
 1. **Clarify the product** — ask which Firefox/Mozilla product if not specified
 2. **Search using Glean Dictionary MCP** (preferred):
-   - `mcp__glean-dictionary__search_metrics` with app_name (snake_case), query, type, include_expired
-   - `mcp__glean-dictionary__get_metric` for full metric definitions
-   - `mcp__glean-dictionary__get_app` for app overview (metrics count, pings, tags)
-   - `mcp__glean-dictionary__get_ping` for ping details and contained metrics
-   - `mcp__glean-dictionary__list_apps` to discover available apps
+   - `mcp__plugin_mozdata_glean-dictionary__search_metrics` with app_name (snake_case), query, type, include_expired
+   - `mcp__plugin_mozdata_glean-dictionary__get_metric` for full metric definitions
+   - `mcp__plugin_mozdata_glean-dictionary__get_app` for app overview (metrics count, pings, tags)
+   - `mcp__plugin_mozdata_glean-dictionary__get_ping` for ping details and contained metrics
+   - `mcp__plugin_mozdata_glean-dictionary__list_apps` to discover available apps
 3. **Fallback: ProbeInfo API** — only use WebFetch to ProbeInfo API when data is not available via Glean Dictionary MCP. Use kebab-case for product name in URL (e.g., `firefox-desktop`).
 4. **Provide to user**:
    - Metric name, type, description, and which pings contain it
