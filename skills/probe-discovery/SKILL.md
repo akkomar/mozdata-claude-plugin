@@ -4,7 +4,7 @@ description: >
   Find Mozilla telemetry probes and Glean metrics. Use when user asks about:
   Firefox metrics, Glean probes, telemetry data, accessibility probes,
   search metrics, or any Mozilla product instrumentation.
-allowed-tools: WebFetch, Read, mcp__glean-dictionary__list_apps, mcp__glean-dictionary__get_app, mcp__glean-dictionary__search_metrics, mcp__glean-dictionary__get_metric, mcp__glean-dictionary__get_ping, mcp__metric-hub__search_metrics, mcp__metric-hub__get_metric, mcp__metric-hub__list_platforms
+allowed-tools: WebFetch, Read, mcp__plugin_mozdata_glean-dictionary__list_apps, mcp__plugin_mozdata_glean-dictionary__get_app, mcp__plugin_mozdata_glean-dictionary__search_metrics, mcp__plugin_mozdata_glean-dictionary__get_metric, mcp__plugin_mozdata_glean-dictionary__get_ping, mcp__plugin_mozdata_metric-hub__search_metrics, mcp__plugin_mozdata_metric-hub__get_metric, mcp__plugin_mozdata_metric-hub__list_platforms
 ---
 
 # Mozilla Probe Discovery
