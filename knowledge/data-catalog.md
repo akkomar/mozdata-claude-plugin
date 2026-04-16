@@ -21,8 +21,8 @@ Level 3: Raw ping tables (slowest, most expensive — avoid for aggregations)
 
 ### 1. User Counting (DAU/MAU/WAU)
 
-For official DAU/MAU/WAU numbers, check the Confluence definition if Atlassian MCP is available:
-https://mozilla-hub.atlassian.net/wiki/spaces/DATA/pages/314704478
+For official DAU/MAU/WAU numbers, use Metric Hub MCP (`get_metric_sql`) if available for the authoritative SQL. For broader context, check Confluence if Atlassian MCP is configured:
+https://mozilla-hub.atlassian.net/wiki/spaces/DATA/pages/610894135/Metrics
 
 The Single Source of Truth for DAU is the unified table, filtered by app_name:
 ```

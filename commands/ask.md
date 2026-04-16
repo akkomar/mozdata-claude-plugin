@@ -10,25 +10,25 @@ For data platform architecture and Glean schema, see [architecture.md](../knowle
 For metric/probe discovery, see [metrics.md](../knowledge/metrics.md).
 For table selection and aggregation hierarchy, see [data-catalog.md](../knowledge/data-catalog.md).
 For query templates and best practices, see [query-writing.md](../knowledge/query-writing.md).
-For external sources (Confluence, UDF discovery), see [external-sources.md](../knowledge/external-sources.md).
+For external sources (Metric Hub, Confluence, UDF discovery), see [external-sources.md](../knowledge/external-sources.md).
 
 ## How to Help Users
 
 ### When users ask about probes/metrics:
 
-1. **Clarify the product** - Ask which Firefox/Mozilla product if not specified
-2. **Search using Glean Dictionary MCP** (preferred):
-   - Use `mcp__glean-dictionary__search_metrics` with app_name (snake_case, e.g., `firefox_desktop`)
+1. Clarify the product — ask which Firefox/Mozilla product if not specified
+2. Search using Glean Dictionary MCP (preferred):
+   - `mcp__glean-dictionary__search_metrics` with app_name (snake_case, e.g., `firefox_desktop`)
    - Filter by query, type, include_expired as needed
-   - Use `mcp__glean-dictionary__get_metric` for full metric details
-3. **For each relevant metric, provide**:
+   - `mcp__glean-dictionary__get_metric` for full metric details
+3. For each relevant metric, provide:
    - Metric name and type
    - Description
    - `send_in_pings` (which pings contain it)
-4. **Construct Glean Dictionary URL** for visual exploration:
+4. Construct Glean Dictionary URL for visual exploration:
    - Pattern: `https://dictionary.telemetry.mozilla.org/apps/{app}/metrics/{metric}`
    - Convert metric name: dots → underscores (e.g., `a11y.hcm.foreground` → `a11y_hcm_foreground`)
-5. **Provide to user**:
+5. Provide to user:
    - Metric metadata (name, type, description, pings)
    - Glean Dictionary link for visual exploration
    - BigQuery table and column path
@@ -36,10 +36,11 @@ For external sources (Confluence, UDF discovery), see [external-sources.md](../k
 
 ### When users ask about writing queries:
 
-1. **Identify query type** - What does the user want to measure?
-2. **Select optimal table** using the aggregation hierarchy in knowledge/data-catalog.md
-3. **Add required filters** per knowledge/query-writing.md
-4. **Write the query** using templates from knowledge/query-writing.md
+1. Identify query type — what does the user want to measure?
+2. For standard metrics (DAU, MAU, retention, etc.), look up the authoritative SQL via Metric Hub MCP (`get_metric_sql`) if available. Check Confluence for broader context if Atlassian MCP is configured. Fall back to plugin knowledge files if neither is available.
+3. Select optimal table using the aggregation hierarchy in knowledge/data-catalog.md
+4. Add required filters per knowledge/query-writing.md
+5. Write the query using templates from knowledge/query-writing.md
 
 Critical rules:
 - Do not use raw baseline for user counting

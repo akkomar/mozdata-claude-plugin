@@ -11,7 +11,7 @@ allowed-tools: WebFetch, Read, mcp__glean-dictionary__list_apps, mcp__glean-dict
 
 For metric/probe discovery and naming conventions, see [metrics.md](../../knowledge/metrics.md).
 For data platform architecture, see [architecture.md](../../knowledge/architecture.md).
-For external sources (Confluence, app discovery), see [external-sources.md](../../knowledge/external-sources.md).
+For external sources (Metric Hub, Confluence, app discovery), see [external-sources.md](../../knowledge/external-sources.md).
 
 ## Workflow
 

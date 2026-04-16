@@ -60,7 +60,7 @@ FROM mozdata.firefox_desktop.metrics
 
 ### DAU/MAU/WAU (use active_users_aggregates — Single Source of Truth)
 
-Check the Confluence DAU definition if Atlassian MCP is available:
+Use Metric Hub MCP (`get_metric_sql`) for the authoritative SQL if available. For broader context, check Confluence:
 https://mozilla-hub.atlassian.net/wiki/spaces/DATA/pages/314704478
 
 ```sql
