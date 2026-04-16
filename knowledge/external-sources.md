@@ -21,6 +21,12 @@ Retrieve a specific page by ID:
 mcp__atlassian__getConfluencePage(pageId="314704478")
 ```
 
+## Metric Hub MCP (bundled)
+
+Metric Hub is the central source of truth for Mozilla's business metric definitions. The MCP server is bundled with this plugin (`mcp__metric-hub__*` tools).
+
+When writing queries for standard metrics (DAU, MAU, retention, etc.), use `get_metric_sql` to get the authoritative SQL rather than writing it from scratch. This ensures the query matches the sanctioned definition. Use `search_metrics` to find metrics by name or description across platforms.
+
 ## UDF Discovery via INFORMATION_SCHEMA
 
 The mozfun UDF reference in this plugin covers common functions. For UDFs beyond what's documented here, discover them via BigQuery:
