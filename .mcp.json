@@ -3,6 +3,10 @@
         "glean-dictionary": {
             "type": "http",
             "url": "https://dictionary.telemetry.mozilla.org/mcp"
+        },
+        "metric-hub": {
+            "type": "sse",
+            "url": "https://metric-hub-mcp-744009727678.us-west1.run.app/sse"
         }
     }
 }
