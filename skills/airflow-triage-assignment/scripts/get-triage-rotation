@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""Read the Airflow triage rotation spreadsheet and suggest who's next.
+
+Uses service account impersonation (no key files needed) to read a private
+Google Sheet. Requires:
+  - gcloud auth (user credentials)
+  - Service Account Token Creator role on the target SA
+  - Sheet shared with the SA as Viewer (or Editor for --assign)
+
+Examples:
+    ./scripts/get-triage-rotation           # Show current triager + next suggestion
+    ./scripts/get-triage-rotation --json    # Full JSON output
+    ./scripts/get-triage-rotation --skip 1  # Skip first suggestion, show second
+    ./scripts/get-triage-rotation --assign "Name"  # Assign Name to next unassigned week
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import urllib.request
+from datetime import date, datetime
+
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+
+SPREADSHEET_ID = "1PAXtpmOTPjRjeR7n88kKZ3iQ9IFhTflpw7TL3rmkgdg"
+SHEET_NAME = "Rotation Schedule"
+SERVICE_ACCOUNT = "airflow-triage@ascholtz-dev.iam.gserviceaccount.com"
+READ_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+# Column indices (0-based) in the spreadsheet
+COL_FROM = 0        # A: Week start date
+COL_TO = 1          # B: Week end date
+COL_WHO = 2         # C: Who is triaging?
+COL_HOURS = 3       # D: Time spent triaging [h]
+COL_NOTES = 4       # E: Notes
+COL_MEMBER = 5      # F: Member name (sidebar)
+COL_LAST_TRIAGED = 6  # G: Last triaged date (sidebar)
+COL_MEMBER_NOTES = 7  # H: Member notes (sidebar, e.g. "needs to shadow")
+
+# Google Sheets represents empty date cells as this epoch artifact
+SHEETS_EMPTY_DATE = "1899-12-29"
+
+DATE_FORMATS = ['%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y']
+
+
+def parse_date(s: str) -> date | None:
+    """Parse a date string, trying common formats."""
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def get_sheets_service(write=False):
+    """Authenticate via service account impersonation and return a Sheets service.
+
+    Uses the user's gcloud credentials to impersonate a service account,
+    then builds a Sheets API client with the impersonated token.
+    """
+    result = subprocess.run(
+        ['gcloud', 'auth', 'print-access-token'],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"Error: not authenticated to GCP. Run: gcloud auth login", file=sys.stderr)
+        sys.exit(2)
+
+    scopes = WRITE_SCOPES if write else READ_SCOPES
+    url = (f"https://iamcredentials.googleapis.com/v1/projects/-/"
+           f"serviceAccounts/{SERVICE_ACCOUNT}:generateAccessToken")
+    body = json.dumps({"scope": scopes}).encode()
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Authorization", f"Bearer {result.stdout.strip()}")
+    req.add_header("Content-Type", "application/json")
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode())
+            creds = Credentials(token=data["accessToken"])
+    except Exception as e:
+        print(f"Error impersonating service account: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    return build("sheets", "v4", credentials=creds)
+
+
+def cell(row: list, idx: int, default: str = "") -> str:
+    """Safely get a stripped cell value from a row."""
+    return row[idx].strip() if idx < len(row) and row[idx].strip() else default
+
+
+def parse_spreadsheet(rows: list) -> tuple[list[dict], list[dict]]:
+    """Parse the rotation spreadsheet into structured data."""
+    # Find the header row (starts with "From")
+    header_idx = None
+    for i, row in enumerate(rows):
+        if row and row[0].strip() == "From":
+            header_idx = i
+            break
+
+    if header_idx is None:
+        print("Could not find header row in spreadsheet", file=sys.stderr)
+        sys.exit(1)
+
+    data_rows = rows[header_idx + 1:]
+    sheet_row_offset = header_idx + 2  # 1-indexed sheet row number
+
+    schedule = []
+    members = []
+
+    for i, row in enumerate(data_rows):
+        from_str = cell(row, COL_FROM)
+        to_str = cell(row, COL_TO)
+        who = cell(row, COL_WHO)
+        hours = cell(row, COL_HOURS)
+        notes = cell(row, COL_NOTES)
+
+        # Parse schedule entries (cols A-D)
+        if from_str and from_str != SHEETS_EMPTY_DATE:
+            from_date = parse_date(from_str)
+            to_date = parse_date(to_str) if to_str else None
+            if from_date:
+                schedule.append({
+                    'from_date': from_date,
+                    'to_date': to_date,
+                    'who': who,
+                    'hours': hours,
+                    'notes': notes,
+                    'sheet_row': sheet_row_offset + i,
+                })
+
+        # Parse members sidebar (cols F-H)
+        member_name = cell(row, COL_MEMBER)
+        last_triaged_str = cell(row, COL_LAST_TRIAGED)
+        member_notes = cell(row, COL_MEMBER_NOTES)
+        if member_name:
+            needs_shadow = 'shadow' in member_notes.lower() or 'shadow' in last_triaged_str.lower()
+            last_triaged = parse_date(last_triaged_str) if not needs_shadow else None
+            members.append({
+                'name': member_name,
+                'last_triaged': last_triaged,
+                'needs_shadow': needs_shadow,
+            })
+
+    return schedule, members
+
+
+def analyze_rotation(schedule: list, members: list, skip: int = 0) -> dict:
+    """Analyze the rotation to find current triager, next unassigned week, and suggestion."""
+    today = date.today()
+
+    # Find current week's triager
+    current = None
+    for entry in schedule:
+        if entry['from_date'] and entry['to_date'] and entry['from_date'] <= today <= entry['to_date']:
+            current = entry
+            break
+
+    # Find next unassigned week
+    next_unassigned = None
+    for entry in schedule:
+        if entry['from_date'] and entry['from_date'] > today and not entry['who']:
+            next_unassigned = entry
+            break
+
+    # Sort eligible members by last triaged (oldest/never first)
+    eligible = [m for m in members if not m['needs_shadow']]
+    eligible.sort(key=lambda m: m['last_triaged'] or date.min)
+
+    # Pick suggestion, honoring skip
+    suggestion = None
+    skipped = []
+    for m in eligible:
+        if len(skipped) < skip:
+            skipped.append(m['name'])
+            continue
+        suggestion = m['name']
+        break
+
+    shadow_members = [m['name'] for m in members if m['needs_shadow']]
+
+    return {
+        'today': today.isoformat(),
+        'current_triager': _format_entry(current) if current else None,
+        'next_unassigned_week': _format_entry(next_unassigned) if next_unassigned else None,
+        'suggestion': suggestion,
+        'skipped': skipped,
+        'members_by_last_triaged': [
+            {'name': m['name'], 'last_triaged': m['last_triaged'].isoformat() if m['last_triaged'] else None}
+            for m in eligible
+        ],
+        'needs_shadow': shadow_members,
+    }
+
+
+def _format_entry(entry: dict) -> dict:
+    """Convert a schedule entry to JSON-serializable format."""
+    return {
+        'from': entry['from_date'].isoformat(),
+        'to': entry['to_date'].isoformat() if entry['to_date'] else None,
+        'who': entry['who'],
+        'hours': entry['hours'],
+        'notes': entry['notes'],
+        'sheet_row': entry['sheet_row'],
+    }
+
+
+def assign_triager(service, schedule: list, name: str, week_from: str) -> dict | None:
+    """Assign a triager to a specific week by updating the spreadsheet."""
+    target_date = parse_date(week_from)
+    target = None
+    for entry in schedule:
+        if entry['from_date'] == target_date:
+            target = entry
+            break
+
+    if target is None:
+        print(f"Error: No schedule entry found for week starting {week_from}", file=sys.stderr)
+        return None
+
+    col_letter = chr(ord('A') + COL_WHO)
+    cell_range = f"'{SHEET_NAME}'!{col_letter}{target['sheet_row']}"
+    service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=cell_range,
+        valueInputOption="RAW",
+        body={"values": [[name]]},
+    ).execute()
+
+    return target
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Read Airflow triage rotation and suggest next triager.",
+    )
+    parser.add_argument("--json", action="store_true",
+                        help="Output full JSON")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Show progress on stderr")
+    parser.add_argument("--skip", type=int, default=0,
+                        help="Skip N suggestions (0=first, 1=second, etc.)")
+    parser.add_argument("--assign",
+                        help="Assign NAME to the next unassigned week")
+    parser.add_argument("--week",
+                        help="Target week start date for --assign (default: next unassigned)")
+    args = parser.parse_args()
+
+    if args.verbose:
+        print("Authenticating via service account impersonation...", file=sys.stderr)
+
+    service = get_sheets_service(write=bool(args.assign))
+
+    if args.verbose:
+        print("Reading spreadsheet...", file=sys.stderr)
+
+    result = service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=SHEET_NAME,
+    ).execute()
+    rows = result.get("values", [])
+
+    if not rows:
+        print("No data found in spreadsheet.", file=sys.stderr)
+        sys.exit(1)
+
+    schedule, members = parse_spreadsheet(rows)
+
+    if args.verbose:
+        print(f"  {len(schedule)} weeks, {len(members)} members", file=sys.stderr)
+
+    # Handle assignment
+    if args.assign:
+        analysis = analyze_rotation(schedule, members)
+        week_from = args.week
+        if not week_from:
+            unassigned = analysis['next_unassigned_week']
+            if not unassigned:
+                print("Error: No unassigned weeks found.", file=sys.stderr)
+                sys.exit(1)
+            week_from = unassigned['from']
+
+        if args.verbose:
+            print(f"Assigning {args.assign} to week starting {week_from}...", file=sys.stderr)
+
+        updated = assign_triager(service, schedule, args.assign, week_from)
+        if updated:
+            print(json.dumps({
+                'action': 'assigned',
+                'who': args.assign,
+                'week_from': week_from,
+                'week_to': updated['to_date'].isoformat() if updated['to_date'] else None,
+            }, indent=2))
+        else:
+            sys.exit(1)
+        return
+
+    analysis = analyze_rotation(schedule, members, skip=args.skip)
+
+    if args.json:
+        print(json.dumps(analysis, indent=2))
+    else:
+        # Human-readable summary
+        current = analysis['current_triager']
+        if current:
+            print(f"This week ({current['from']} to {current['to']}): {current['who'] or 'UNASSIGNED'}")
+        else:
+            print("No rotation entry found for this week.")
+
+        unassigned = analysis['next_unassigned_week']
+        if unassigned:
+            print(f"\nNext unassigned week: {unassigned['from']} to {unassigned['to']}")
+            print(f"Suggested: {analysis['suggestion']}")
+            if analysis['skipped']:
+                print(f"  (Skipped: {', '.join(analysis['skipped'])})")
+
+        if analysis['needs_shadow']:
+            print(f"\nNeeds to shadow before solo triage:")
+            for name in analysis['needs_shadow']:
+                print(f"  {name}")
+
+        print(f"\nMembers by last triaged (oldest first):")
+        for m in analysis['members_by_last_triaged']:
+            print(f"  {m['name']:<15} {m['last_triaged'] or 'never'}")
+
+
+if __name__ == "__main__":
+    main()
