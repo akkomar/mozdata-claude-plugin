@@ -23,6 +23,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      # issues: write # testing - Without it, the pull_request trigger would still work, but the @claude comment trigger would fail with a permissions error.
       id-token: write
     steps:
       - name: Checkout repository
