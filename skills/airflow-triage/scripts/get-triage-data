@@ -80,6 +80,17 @@ def parse_since(since_str: str, reference: Optional[datetime] = None) -> datetim
     raise ValueError(f"Cannot parse time: {since_str}. Use format like '24h', '3d', or '2025-01-30'")
 
 
+def sql_str(value: str) -> str:
+    """Escape a string for safe interpolation into a BigQuery SQL single-quoted literal.
+
+    The `bq` CLI doesn't take parameter bindings for inline queries, so we fall
+    back to doubling single quotes — the standard SQL escape. Any other odd
+    character (dag_id/task_id are drawn from Airflow identifiers) passes
+    through unchanged.
+    """
+    return value.replace("'", "''")
+
+
 def run_bq_query(sql: str, verbose: bool = False) -> list:
     """Run a BigQuery query and return parsed JSON results."""
     if verbose:
@@ -99,25 +110,39 @@ def run_bq_query(sql: str, verbose: bool = False) -> list:
         return []
 
 
-def _parse_task_event(text: str) -> Optional[dict]:
-    """Parse a Cloud Logging textPayload for a task FAILED/SUCCESS event.
+def _parse_log_line(line: str) -> Optional[dict]:
+    """Parse a `gcloud logging read --format=value(timestamp,textPayload)` line.
 
-    Expected format:
-      Marking task as FAILED. dag_id=X, task_id=Y, run_id=Z, execution_date=..., start_date=..., end_date=...
+    The line is tab-separated: `<iso-timestamp>\\t<payload>`. We use the
+    Cloud Logging timestamp as the authoritative event time and pull
+    dag_id/task_id/run_id out of the payload. The payload's own
+    `end_date=` field is unreliable (missing for UP_FOR_RETRY, variable
+    formats), so we don't parse it.
 
-    Returns dict with dag_id, task_id, run_id, end_date or None if unparseable.
+    Returns dict with dag_id, task_id, run_id, event_time or None if
+    unparseable. event_time is ISO-8601 UTC (lexicographically comparable
+    to the other timestamps we use elsewhere).
     """
-    fields = {}
+    parts = line.split('\t', 1)
+    if len(parts) != 2:
+        return None
+    timestamp, payload = parts[0].strip(), parts[1]
+    # Normalize to `YYYY-MM-DDTHH:MM:SSZ` so comparisons against the
+    # BQ-formatted timestamps used elsewhere are lexicographically sound
+    # (Cloud Logging returns fractional seconds; `.` < `Z` would otherwise
+    # flip the ordering at same-second boundaries).
+    m = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})', timestamp)
+    if not m:
+        return None
+    event_time = m.group(1) + 'Z'
+
+    fields = {'event_time': event_time}
     for key in ('dag_id', 'task_id', 'run_id'):
-        m = re.search(rf'{key}=([^,]+)', text)
+        m = re.search(rf'{key}=([^,]+)', payload)
         if m:
             fields[key] = m.group(1).strip()
     if 'dag_id' not in fields or 'task_id' not in fields:
         return None
-
-    m = re.search(r'end_date=(\d{8}T\d{6})', text)
-    if m:
-        fields['end_date'] = datetime.strptime(m.group(1), '%Y%m%dT%H%M%S').replace(tzinfo=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
     return fields
 
@@ -167,20 +192,20 @@ def discover_failures_from_logs(since: datetime, as_of: Optional[datetime] = Non
     for line in result.stdout.strip().split('\n'):
         if not line:
             continue
-        parsed = _parse_task_event(line)
+        parsed = _parse_log_line(line)
         if not parsed:
             continue
 
         key = (parsed['dag_id'], parsed['task_id'])
-        end_date = parsed.get('end_date', since_str)
+        event_time = parsed['event_time']
         run_id = parsed.get('run_id', '')
 
         if key not in task_failures:
             task_failures[key] = {
                 'dag_id': parsed['dag_id'],
                 'task_id': parsed['task_id'],
-                'first_failure': end_date,
-                'last_failure': end_date,
+                'first_failure': event_time,
+                'last_failure': event_time,
                 'failure_count': 1,
                 'run_id': run_id,
                 'issue_type': 'failed',
@@ -188,10 +213,10 @@ def discover_failures_from_logs(since: datetime, as_of: Optional[datetime] = Non
         else:
             entry = task_failures[key]
             entry['failure_count'] += 1
-            if end_date < entry['first_failure']:
-                entry['first_failure'] = end_date
-            if end_date > entry['last_failure']:
-                entry['last_failure'] = end_date
+            if event_time < entry['first_failure']:
+                entry['first_failure'] = event_time
+            if event_time > entry['last_failure']:
+                entry['last_failure'] = event_time
                 entry['run_id'] = run_id  # keep most recent run_id
 
     failures = list(task_failures.values())
@@ -239,14 +264,14 @@ def discover_successes_from_logs(since: datetime, as_of: Optional[datetime] = No
     for line in result.stdout.strip().split('\n'):
         if not line:
             continue
-        parsed = _parse_task_event(line)
+        parsed = _parse_log_line(line)
         if not parsed:
             continue
 
         key = (parsed['dag_id'], parsed['task_id'])
-        end_date = parsed.get('end_date', '')
-        if key not in successes or end_date > successes[key]:
-            successes[key] = end_date
+        event_time = parsed['event_time']
+        if key not in successes or event_time > successes[key]:
+            successes[key] = event_time
 
     if verbose:
         print(f"  Found {len(successes)} tasks with successful runs", file=sys.stderr)
@@ -315,9 +340,9 @@ def check_targeted_successes(failures: list, since: datetime,
             return None
 
         for line in result.stdout.strip().split('\n'):
-            parsed = _parse_task_event(line)
+            parsed = _parse_log_line(line)
             if parsed:
-                return parsed.get('end_date', '')
+                return parsed['event_time']
         return None
 
     if verbose:
@@ -383,7 +408,7 @@ def classify_failures(failures: list, since: datetime, as_of: datetime,
     # Build a list of (dag_id, task_id) pairs to check
     pairs = [(f['dag_id'], f['task_id']) for f in failures]
     pair_filter = ' OR '.join(
-        f"(dag_id = '{d}' AND task_id = '{t}')" for d, t in pairs
+        f"(dag_id = '{sql_str(d)}' AND task_id = '{sql_str(t)}')" for d, t in pairs
     )
 
     sql = f"""
@@ -422,7 +447,7 @@ def classify_failures(failures: list, since: datetime, as_of: datetime,
 
     # Fetch DAG-level owners for all affected DAGs
     dag_ids = list({f['dag_id'] for f in failures})
-    dag_filter = ', '.join(f"'{d}'" for d in dag_ids)
+    dag_filter = ', '.join(f"'{sql_str(d)}'" for d in dag_ids)
     owner_sql = f"SELECT dag_id, owners FROM `{BQ_DAG}` WHERE dag_id IN ({dag_filter})"
     owner_rows = run_bq_query(owner_sql, verbose=False)
     dag_owners = {row['dag_id']: row.get('owners', '') for row in owner_rows}

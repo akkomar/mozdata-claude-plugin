@@ -20,6 +20,7 @@ import argparse
 import json
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from datetime import date, datetime
 
@@ -81,9 +82,17 @@ def get_sheets_service(write=False):
     req.add_header("Content-Type", "application/json")
 
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode())
             creds = Credentials(token=data["accessToken"])
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        print(
+            f"Error impersonating {SERVICE_ACCOUNT} (HTTP {e.code} {e.reason}): {body}\n"
+            f"Hint: you need the 'Service Account Token Creator' role on that SA.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     except Exception as e:
         print(f"Error impersonating service account: {e}", file=sys.stderr)
         sys.exit(1)
