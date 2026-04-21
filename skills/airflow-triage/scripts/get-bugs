@@ -8,10 +8,12 @@ Can be used standalone or piped from get-triage-data:
 
     ./scripts/get-triage-data --since 24h | ./scripts/get-bugs
     ./scripts/get-bugs --failures failures.json
-    ./scripts/get-bugs --since 24h  # just list bugs, no failure matching
+    ./scripts/get-bugs --since 24h  # fetch bugs using the given time window
 
 Output is a JSON object with three arrays: new, ongoing, resolved.
-Slow tasks are included in new/ongoing based on when they started relative to --since.
+When run without failure input, it still emits the classification object rather
+than a raw list of fetched bugs. Slow tasks are included in new/ongoing based on
+when they started relative to --since.
 """
 
 import argparse
