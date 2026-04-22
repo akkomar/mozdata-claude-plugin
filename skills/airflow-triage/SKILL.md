@@ -6,7 +6,7 @@ description: >
   check which DAGs are new/ongoing/resolved, or summarize Airflow incidents for a
   given time period.
 user-invocable: true
-allowed-tools: Bash(gcloud auth print-access-token:*), Bash(gcloud storage cat:*), Bash(gcloud storage ls:*), Bash(gcloud logging read:*), Bash(bq query:*), Bash(*/scripts/get-triage-data:*), Bash(*/scripts/get-bugs:*), Bash(*/scripts/auto-investigate:*), Bash(*/scripts/generate-slack-message:*), Bash(*/scripts/fetch-task-log:*)
+allowed-tools: Bash(*/scripts/run-triage:*), Bash(*/scripts/fetch-task-log:*), Bash(*/scripts/get-triage-data:*), Bash(*/scripts/get-bugs:*), Bash(*/scripts/auto-investigate:*), Bash(*/scripts/generate-slack-message:*), Bash(gh search prs:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh api:*)
 ---
 
 # Airflow Triage Summary Generation
@@ -16,24 +16,29 @@ You generate concise triage summaries of Mozilla Airflow failures, categorized a
 
 ## Helper Scripts
 
-Four scripts in `scripts/` form a pipeline:
+`scripts/run-triage` wraps the full pipeline. Use it for normal runs; call the
+individual scripts below only when you need intermediate JSON for debugging.
 
 ```bash
-# Full pipeline: discover → enrich with bugs → investigate → generate Slack message
-scripts/get-triage-data | scripts/get-bugs | scripts/auto-investigate | scripts/generate-slack-message
+# Default run (last 24h)
+scripts/run-triage
 
-# With verbose output and custom timeframe
-scripts/get-triage-data --since 48h -v | scripts/get-bugs --since 48h -v | scripts/auto-investigate -v | scripts/generate-slack-message
+# Custom window, verbose stage logs to /tmp/triage.log
+scripts/run-triage --since 48h -v
 
-# After weekends (3-day window)
-scripts/get-triage-data --since 3d | scripts/get-bugs --since 3d | scripts/auto-investigate | scripts/generate-slack-message
+# After weekends
+scripts/run-triage --since 3d
 
 # Historical triage
-scripts/get-triage-data --as-of 2025-04-13 | scripts/get-bugs | scripts/auto-investigate | scripts/generate-slack-message
+scripts/run-triage --as-of 2025-04-13
+```
 
-# Stop at any stage for intermediate JSON
-scripts/get-triage-data | scripts/get-bugs                          # Just failures + bugs
-scripts/get-triage-data | scripts/get-bugs | scripts/auto-investigate   # + investigation results
+The four underlying stages (get-triage-data → get-bugs → auto-investigate →
+generate-slack-message) are still available individually for debugging:
+
+```bash
+scripts/get-triage-data | scripts/get-bugs                            # Just failures + bugs
+scripts/get-triage-data | scripts/get-bugs | scripts/auto-investigate # + investigation results
 ```
 
 ### get-triage-data
@@ -115,7 +120,7 @@ failures with matching bug links. Designed to be piped from `get-triage-data`.
 ```bash
 scripts/get-triage-data | scripts/get-bugs              # Pipe from get-triage-data
 scripts/get-bugs --failures failures.json               # Or read from file
-scripts/get-bugs --since 24h                             # Just list bugs, no failure matching
+scripts/get-bugs --failures failures.json --since 24h   # Limit bug lookup window while matching failures
 ```
 
 Output is a JSON object with three arrays:
@@ -183,20 +188,21 @@ Placeholders to URL-encode and fill in:
 
 ### Phase 1: Run the full pipeline
 
-Run the full pipeline (auth is checked automatically — if it fails with exit
-code 2, tell the user to run `! gcloud auth login` and retry):
+Run the wrapper (auth is checked automatically — if it fails with exit code 2,
+tell the user to run `! gcloud auth login` and retry):
 
 ```bash
-scripts/get-triage-data --since <timeframe> -v 2>/tmp/triage.log | scripts/get-bugs --since <timeframe> -v 2>>/tmp/triage.log | scripts/auto-investigate -v 2>>/tmp/triage.log | scripts/generate-slack-message
+scripts/run-triage --since <timeframe> -v
 ```
 
-For historical triage (e.g. `--as-of 2025-04-13`), add the flag to `get-triage-data`:
+For historical triage:
 ```bash
-scripts/get-triage-data --as-of <date> -v 2>/tmp/triage.log | scripts/get-bugs -v 2>>/tmp/triage.log | scripts/auto-investigate -v 2>>/tmp/triage.log | scripts/generate-slack-message
+scripts/run-triage --as-of <date> -v
 ```
 
 This produces copy-pasteable Slack message blocks (main message + per-DAG threads)
 with all failures categorized, investigated, and linked to Airflow UI and Bugzilla.
+Stage stderr is captured in `/tmp/triage.log`.
 
 ### Phase 2: Review and adjust
 
