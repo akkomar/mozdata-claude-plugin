@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""Fetch and match Bugzilla [airflow-triage] bugs against current failures.
+
+Fetches open and recently resolved bugs from Bugzilla, then classifies
+current failures as 'new', 'ongoing', or 'resolved'.
+
+Can be used standalone or piped from get-triage-data:
+
+    ./scripts/get-triage-data --since 24h | ./scripts/get-bugs
+    ./scripts/get-bugs --failures failures.json
+    ./scripts/get-bugs --since 24h  # fetch bugs using the given time window
+
+Output is a JSON object with three arrays: new, ongoing, resolved.
+When run without failure input, it still emits the classification object rather
+than a raw list of fetched bugs. Slow tasks are included in new/ongoing based on
+when they started relative to --since.
+"""
+
+import argparse
+import json
+import sys
+import urllib.request
+import urllib.parse
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+BUGZILLA_REST = "https://bugzilla.mozilla.org/rest/bug"
+BUGZILLA_URL = "https://bugzilla.mozilla.org/show_bug.cgi?id="
+WHITEBOARD_TAG = "[airflow-triage]"
+
+
+def fetch_bugs(params: dict, verbose: bool = False) -> list:
+    """Fetch bugs from Bugzilla REST API."""
+    query = urllib.parse.urlencode(params, doseq=True)
+    url = f"{BUGZILLA_REST}?{query}"
+
+    if verbose:
+        print(f"  Fetching: {url}", file=sys.stderr)
+
+    try:
+        req = urllib.request.Request(url)
+        req.add_header('User-Agent', 'airflow-triage-tool/1.0')
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get('bugs', [])
+    except Exception as e:
+        print(f"Error fetching Bugzilla: {e}", file=sys.stderr)
+        return []
+
+
+def fetch_open_bugs(verbose: bool = False) -> list:
+    """Fetch all open [airflow-triage] bugs."""
+    if verbose:
+        print("Fetching open [airflow-triage] bugs...", file=sys.stderr)
+
+    params = {
+        'status_whiteboard': WHITEBOARD_TAG,
+        'bug_status': ['NEW', 'UNCONFIRMED', 'CONFIRMED', 'IN_PROGRESS', 'ASSIGNED', 'REOPENED'],
+        'include_fields': 'id,summary,status,whiteboard,last_change_time',
+        'limit': 200,
+    }
+    return fetch_bugs(params, verbose)
+
+
+def fetch_resolved_bugs(since: datetime, verbose: bool = False) -> list:
+    """Fetch [airflow-triage] bugs resolved since a given time."""
+    if verbose:
+        print(f"Fetching resolved [airflow-triage] bugs since {since.isoformat()}...", file=sys.stderr)
+
+    params = {
+        'status_whiteboard': WHITEBOARD_TAG,
+        'bug_status': ['RESOLVED', 'VERIFIED', 'CLOSED'],
+        'last_change_time': since.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'include_fields': 'id,summary,status,resolution,whiteboard,last_change_time',
+        'limit': 200,
+    }
+    return fetch_bugs(params, verbose)
+
+
+def match_bug_to_failure(bug: dict, dag_id: str, task_id: str) -> int:
+    """Score how well a Bugzilla bug matches a DAG/task failure.
+
+    Returns a match score:
+      3 = exact dag_id.task_id match in summary
+      2 = dag_id matches and task is related (e.g. check task maps to underlying query)
+      1 = task_id alone matches (task_ids are usually specific enough)
+      0 = no meaningful match
+
+    DAG-only matches are NOT counted — many tasks share a DAG, so
+    dag_id alone produces false positives.
+    """
+    summary = bug.get('summary', '').lower()
+    dag_lower = dag_id.lower()
+    task_lower = task_id.lower()
+
+    # Exact match: both dag_id and task_id appear in summary
+    if dag_lower in summary and task_lower in summary:
+        return 3
+
+    # For check tasks (checks__fail_X, checks__warn_X), try matching the
+    # underlying table task X — a bug filed against the query itself is
+    # relevant to its check.
+    underlying_task = None
+    for prefix in ('checks__fail_', 'checks__warn_'):
+        if task_lower.startswith(prefix):
+            underlying_task = task_lower[len(prefix):]
+            break
+
+    if underlying_task and dag_lower in summary and underlying_task in summary:
+        return 2
+
+    # Task-only match (task_ids are usually globally unique)
+    if task_lower in summary:
+        return 1
+
+    # Underlying task match without dag
+    if underlying_task and underlying_task in summary:
+        return 1
+
+    return 0
+
+
+def find_matching_bug(bugs: list, dag_id: str, task_id: str) -> Optional[dict]:
+    """Find the best matching bug for a failure.
+
+    Uses scored matching: prefers exact dag+task matches over partial,
+    then most recently changed among ties.
+    """
+    scored = [(match_bug_to_failure(b, dag_id, task_id), b) for b in bugs]
+    scored = [(score, b) for score, b in scored if score > 0]
+
+    if not scored:
+        return None
+
+    # Best score first, then most recently changed
+    scored.sort(key=lambda x: (x[0], x[1].get('last_change_time', '')), reverse=True)
+    return scored[0][1]
+
+
+def enrich_with_bugs(failures: list, open_bugs: list, resolved_bugs: list,
+                     verbose: bool = False) -> dict:
+    """Enrich pre-classified failures with matching Bugzilla bug links.
+
+    Classification (new/ongoing/resolved) comes from get-triage-data based on
+    failure history. This function adds bug references where they exist.
+    """
+    ongoing = []
+    new = []
+    resolved = []
+
+    for item in failures:
+        dag_id = item.get('dag_id', '')
+        task_id = item.get('task_id', '')
+        category = item.get('category', 'new')
+
+        # Find matching bugs (open first, then resolved)
+        open_bug = find_matching_bug(open_bugs, dag_id, task_id) if dag_id else None
+        resolved_bug = find_matching_bug(resolved_bugs, dag_id, task_id) if dag_id else None
+        best_bug = open_bug or resolved_bug
+
+        enriched = {**item}
+        if best_bug:
+            enriched['bug_id'] = best_bug['id']
+            enriched['bug_url'] = f"{BUGZILLA_URL}{best_bug['id']}"
+            enriched['bug_summary'] = best_bug['summary']
+            enriched['bug_status'] = best_bug['status']
+
+            # Upgrade new → ongoing if an open bug already exists
+            if category == 'new' and open_bug:
+                category = 'ongoing'
+                enriched['category'] = 'ongoing'
+                if verbose:
+                    print(f"  {dag_id}.{task_id} [new -> ongoing] -> open bug {best_bug['id']}", file=sys.stderr)
+            elif verbose:
+                print(f"  {dag_id}.{task_id} [{category}] -> bug {best_bug['id']}", file=sys.stderr)
+        else:
+            if verbose:
+                print(f"  {dag_id}.{task_id} [{category}] -> no matching bug", file=sys.stderr)
+
+        if category == 'ongoing':
+            ongoing.append(enriched)
+        elif category == 'resolved':
+            resolved.append(enriched)
+        else:
+            new.append(enriched)
+
+    return {
+        'ongoing': ongoing,
+        'new': new,
+        'resolved': resolved,
+    }
+
+
+def parse_since(since_str: str) -> datetime:
+    """Parse a time specification into a datetime."""
+    import re
+    now = datetime.now(timezone.utc)
+    match = re.match(r'^(\d+)([hd])$', since_str.lower())
+    if match:
+        value, unit = int(match.group(1)), match.group(2)
+        if unit == 'h':
+            return now - timedelta(hours=value)
+        elif unit == 'd':
+            return now - timedelta(days=value)
+    for fmt in ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S%z']:
+        try:
+            dt = datetime.strptime(since_str, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            continue
+    raise ValueError(f"Cannot parse time: {since_str}. Use '24h', '3d', or '2025-01-30'")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Fetch Bugzilla [airflow-triage] bugs and classify failures.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument('--failures', '-f',
+                        help='JSON file with failures (from get-triage-data). Reads stdin if omitted.')
+    parser.add_argument('--since', '-s', default='24h',
+                        help='Window for recently resolved bugs (default: 24h)')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='Show progress on stderr')
+    args = parser.parse_args()
+
+    try:
+        since = parse_since(args.since)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Load failures
+    failures = []
+    if args.failures:
+        with open(args.failures) as f:
+            failures = json.load(f)
+    elif not sys.stdin.isatty():
+        failures = json.load(sys.stdin)
+
+    # Fetch bugs
+    if args.verbose:
+        print("=== Fetching Bugzilla bugs ===", file=sys.stderr)
+    open_bugs = fetch_open_bugs(verbose=args.verbose)
+    resolved_bugs = fetch_resolved_bugs(since, verbose=args.verbose)
+    if args.verbose:
+        print(f"  {len(open_bugs)} open, {len(resolved_bugs)} recently resolved", file=sys.stderr)
+
+    # Enrich with bug links
+    if args.verbose:
+        print("=== Enriching with Bugzilla links ===", file=sys.stderr)
+    result = enrich_with_bugs(failures, open_bugs, resolved_bugs, verbose=args.verbose)
+
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == '__main__':
+    main()
