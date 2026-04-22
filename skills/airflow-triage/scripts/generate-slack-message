@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Generate Slack triage messages from investigated triage data.
+
+Takes the enriched JSON from auto-investigate (or get-bugs) and produces
+copy-pasteable Slack message blocks: one main message and one thread per DAG.
+
+Usage:
+    scripts/get-triage-data | scripts/get-bugs | scripts/auto-investigate | scripts/generate-slack-message
+    scripts/generate-slack-message --failures investigated.json
+    scripts/generate-slack-message --failures investigated.json --date 2026-04-15
+"""
+
+import argparse
+import json
+import sys
+import urllib.parse
+from collections import defaultdict
+from datetime import datetime, timezone
+from typing import Optional
+
+AIRFLOW_BASE = "https://workflow.telemetry.mozilla.org"
+BUGZILLA_URL = "https://bugzilla.mozilla.org/show_bug.cgi?id="
+
+
+def airflow_url(dag_id: str, task_id: Optional[str] = None,
+                run_id: Optional[str] = None) -> str:
+    """Build a link to the Airflow grid view."""
+    url = f"{AIRFLOW_BASE}/dags/{dag_id}/grid"
+    params = []
+    if run_id:
+        params.append(f"dag_run_id={urllib.parse.quote(run_id, safe='')}")
+    if task_id:
+        params.append(f"task_id={urllib.parse.quote(task_id, safe='')}")
+    if params:
+        params.append("tab=logs")
+        url += "?" + "&".join(params)
+    return url
+
+
+def slack_handle(owner: str) -> str:
+    """Convert email to Slack handle."""
+    if '@' in owner:
+        return f"@{owner.split('@')[0]}"
+    return f"@{owner}" if owner else ''
+
+
+def format_task_entry(item: dict) -> str:
+    """Format a single task as a Slack message entry.
+
+    Puts the task link on its own line so long URLs don't get broken
+    by terminal line wrapping when copied.
+    """
+    dag_id = item['dag_id']
+    task_id = item['task_id']
+    run_id = item.get('run_id')
+
+    task_url = airflow_url(dag_id, task_id, run_id)
+
+    # Description line
+    desc = item.get('description', item.get('error_snippet', ''))
+    bug_id = item.get('bug_id')
+
+    parts = [f"<{task_url}|{task_id}>"]
+    if desc:
+        parts[0] += f" - {desc}"
+    if bug_id:
+        bug_url = f"{BUGZILLA_URL}{bug_id}"
+        parts[0] += f" (<{bug_url}|bug {bug_id}>)"
+
+    return parts[0]
+
+
+def format_main_message(date_str: str, has_new: bool) -> str:
+    """Format the main Slack message."""
+    if has_new:
+        return f":airflow: Airflow triage {date_str}"
+    else:
+        return f":airflow: Airflow triage {date_str}\nNo new issues in Airflow so far today :party-chewbacca:"
+
+
+def format_dag_thread(dag_id: str, items_by_category: dict, owner: str) -> str:
+    """Format a thread for a single DAG with all its failures grouped by category."""
+    dag_url = airflow_url(dag_id)
+    handle = slack_handle(owner)
+    owner_str = f" (owner: {handle})" if handle else ""
+
+    lines = [f"*<{dag_url}|{dag_id}>*{owner_str}"]
+
+    category_order = [
+        ('new', ':oh-no: New'),
+        ('ongoing', ':eyes: Ongoing'),
+        ('resolved', ':tada: Resolved'),
+    ]
+
+    for cat_key, cat_label in category_order:
+        cat_items = items_by_category.get(cat_key, [])
+        if not cat_items:
+            continue
+
+        lines.append(f"\n{cat_label}:")
+        for item in cat_items:
+            lines.append(format_task_entry(item))
+
+    return '\n'.join(lines)
+
+
+def format_slow_thread(slow_items: list) -> Optional[str]:
+    """Format a thread for slow-running tasks."""
+    if not slow_items:
+        return None
+
+    lines = [":turtle: *Slow-running tasks*"]
+    for item in slow_items:
+        dag_id = item['dag_id']
+        task_id = item['task_id']
+        run_id = item.get('run_id')
+        ratio = int(item.get('duration_ratio', 0))
+        owner = slack_handle(item.get('owner', ''))
+
+        task_url = airflow_url(dag_id, task_id, run_id)
+        owner_str = f" (owner: {owner})" if owner else ""
+        lines.append(f"<{task_url}|{dag_id}.{task_id}> - {ratio}x avg duration{owner_str}")
+
+    return '\n'.join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Generate Slack triage messages from investigated triage data.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument('--failures', '-f',
+                        help='JSON file with triage output. Reads stdin if omitted.')
+    parser.add_argument('--date', '-d', default=None,
+                        help='Date for the message header (default: today)')
+    parser.add_argument('--separator', '-s', default='---',
+                        help='Separator between message blocks (default: ---)')
+    args = parser.parse_args()
+
+    # Load data
+    if args.failures:
+        with open(args.failures) as f:
+            data = json.load(f)
+    elif not sys.stdin.isatty():
+        data = json.load(sys.stdin)
+    else:
+        print("Error: provide --failures file or pipe from auto-investigate", file=sys.stderr)
+        sys.exit(1)
+
+    date_str = args.date or datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
+    # Collect all failure items grouped by DAG
+    dag_items = defaultdict(lambda: defaultdict(list))  # dag_id -> category -> [items]
+    dag_owners = {}  # dag_id -> primary owner
+
+    for category in ['ongoing', 'new', 'resolved']:
+        for item in data.get(category, []):
+            dag_id = item['dag_id']
+            dag_items[dag_id][category].append(item)
+            # Use first owner encountered for the DAG
+            # Prefer task-level 'owner' (from metadata.yaml), fall back to
+            # DAG-level 'owners' (comma-separated, from BQ)
+            if dag_id not in dag_owners:
+                owner = item.get('owner', '')
+                if not owner:
+                    owners_str = item.get('owners', '')
+                    if owners_str:
+                        owner = owners_str.split(',')[0].strip()
+                dag_owners[dag_id] = owner
+
+    # Determine if there are any new issues
+    has_new = bool(data.get('new'))
+    has_ongoing = bool(data.get('ongoing'))
+
+    # Generate main message
+    main_msg = format_main_message(date_str, has_new or has_ongoing)
+    print(main_msg)
+    print(args.separator)
+
+    # Generate per-DAG threads, ordered: new-only DAGs first, then ongoing, then resolved
+    def dag_sort_key(dag_id):
+        cats = dag_items[dag_id]
+        has_new = bool(cats.get('new'))
+        has_ongoing = bool(cats.get('ongoing'))
+        has_resolved = bool(cats.get('resolved'))
+        # Sort: new first, then ongoing, then resolved-only
+        return (not has_new, not has_ongoing, not has_resolved, dag_id)
+
+    for dag_id in sorted(dag_items.keys(), key=dag_sort_key):
+        thread = format_dag_thread(dag_id, dag_items[dag_id], dag_owners.get(dag_id, ''))
+        print(thread)
+        print(args.separator)
+
+    # Slow tasks thread
+    slow_items = data.get('slow', [])
+    if slow_items:
+        slow_thread = format_slow_thread(slow_items)
+        if slow_thread:
+            print(slow_thread)
+            print(args.separator)
+
+
+if __name__ == '__main__':
+    main()

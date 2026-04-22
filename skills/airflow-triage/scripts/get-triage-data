@@ -1,0 +1,1361 @@
+#!/usr/bin/env python3
+"""Get currently-failing and anomalously-slow DAGs/tasks for triage.
+
+Finds two types of issues:
+
+1. FAILED: Tasks that failed within the --since window. Uses Cloud Logging for
+   discovery (catches every failure attempt, including retried ones that BQ misses),
+   BQ for classification (new vs ongoing) and exclusions (triage/no_triage, paused),
+   and GCS for verification (confirms current state + extracts error snippets).
+
+2. SLOW: Tasks currently in 'running' state whose elapsed duration exceeds
+   their historical average by a configurable threshold (default: 3x).
+
+Data sources:
+  - Cloud Logging: "Marking task as FAILED/SUCCESS" events (real-time, 30-day retention)
+  - BigQuery: moz-fx-data-shared-prod.monitoring.airflow_task_instance (daily sync)
+  - GCS logs: gs://airflow-remote-logs-prod-prod (real-time, 360-day retention)
+
+Examples:
+    ./scripts/get-triage-data                # Last 24 hours (default)
+    ./scripts/get-triage-data --since 48h    # Last 48 hours
+    ./scripts/get-triage-data --since 3d     # Last 3 days (use after weekends)
+    ./scripts/get-triage-data --slow-threshold 5  # Flag tasks running 5x longer than avg
+    ./scripts/get-triage-data --no-slow      # Skip slow-running task detection
+"""
+
+import argparse
+import concurrent.futures
+import glob
+import json
+import os
+import subprocess
+import sys
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+BQ_TABLE = "moz-fx-data-shared-prod.monitoring.airflow_task_instance"
+BQ_DAG_TAGS = "moz-fx-data-shared-prod.monitoring_derived.airflow_dag_tag_v1"
+BQ_DAG = "mozdata.monitoring.airflow_dag"
+GCS_BUCKET = "gs://airflow-remote-logs-prod-prod"
+
+# Cloud Logging project and namespace for Airflow
+LOGGING_PROJECT = "moz-fx-dataservices-high-prod"
+LOGGING_NAMESPACE = "telemetry-airflow-prod"
+
+# How far back to check for recovery (successful runs after a failure)
+RECOVERY_LOOKBACK_DAYS = 30
+
+# How far back to compute average duration for slow-task detection
+DURATION_HISTORY_DAYS = 30
+
+# Default multiplier: flag tasks running N times longer than their average
+DEFAULT_SLOW_THRESHOLD = 3.0
+
+
+def parse_since(since_str: str, reference: Optional[datetime] = None) -> datetime:
+    """Parse a time specification into a datetime.
+
+    Relative values (48h, 3d) are computed from `reference` if provided,
+    otherwise from now. Pass as_of as reference when --as-of is set so that
+    e.g. --since 48h means "48h before as-of", not "48h before now".
+    """
+    now = reference or datetime.now(timezone.utc)
+    match = re.match(r'^(\d+)([hd])$', since_str.lower())
+    if match:
+        value, unit = int(match.group(1)), match.group(2)
+        if unit == 'h':
+            return now - timedelta(hours=value)
+        elif unit == 'd':
+            return now - timedelta(days=value)
+    for fmt in ['%Y-%m-%d', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S%z']:
+        try:
+            dt = datetime.strptime(since_str, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            continue
+    raise ValueError(f"Cannot parse time: {since_str}. Use format like '24h', '3d', or '2025-01-30'")
+
+
+def sql_str(value: str) -> str:
+    """Escape a string for safe interpolation into a BigQuery SQL single-quoted literal.
+
+    The `bq` CLI doesn't take parameter bindings for inline queries, so we fall
+    back to doubling single quotes — the standard SQL escape. Any other odd
+    character (dag_id/task_id are drawn from Airflow identifiers) passes
+    through unchanged.
+    """
+    return value.replace("'", "''")
+
+
+def run_bq_query(sql: str, verbose: bool = False) -> list:
+    """Run a BigQuery query and return parsed JSON results."""
+    if verbose:
+        print(f"Running BQ query...", file=sys.stderr)
+    cmd = ['bq', 'query', '--nouse_legacy_sql', '--format=json', '--quiet', sql]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Error querying BigQuery: {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+    output = result.stdout.strip()
+    if not output:
+        return []
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing BigQuery output: {e}", file=sys.stderr)
+        return []
+
+
+def _parse_log_line(line: str) -> Optional[dict]:
+    """Parse a `gcloud logging read --format=value(timestamp,textPayload)` line.
+
+    The line is tab-separated: `<iso-timestamp>\\t<payload>`. We use the
+    Cloud Logging timestamp as the authoritative event time and pull
+    dag_id/task_id/run_id out of the payload. The payload's own
+    `end_date=` field is unreliable (missing for UP_FOR_RETRY, variable
+    formats), so we don't parse it.
+
+    Returns dict with dag_id, task_id, run_id, event_time or None if
+    unparseable. event_time is ISO-8601 UTC (lexicographically comparable
+    to the other timestamps we use elsewhere).
+    """
+    parts = line.split('\t', 1)
+    if len(parts) != 2:
+        return None
+    timestamp, payload = parts[0].strip(), parts[1]
+    # Normalize to `YYYY-MM-DDTHH:MM:SSZ` so comparisons against the
+    # BQ-formatted timestamps used elsewhere are lexicographically sound
+    # (Cloud Logging returns fractional seconds; `.` < `Z` would otherwise
+    # flip the ordering at same-second boundaries).
+    m = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})', timestamp)
+    if not m:
+        return None
+    event_time = m.group(1) + 'Z'
+
+    fields = {'event_time': event_time}
+    for key in ('dag_id', 'task_id', 'run_id'):
+        m = re.search(rf'{key}=([^,]+)', payload)
+        if m:
+            fields[key] = m.group(1).strip()
+    if 'dag_id' not in fields or 'task_id' not in fields:
+        return None
+
+    return fields
+
+
+def discover_failures_from_logs(since: datetime, as_of: Optional[datetime] = None,
+                                verbose: bool = False) -> list:
+    """Discover task failures from Cloud Logging.
+
+    Queries for "Marking task as FAILED" and "Marking task as UP_FOR_RETRY"
+    events within the time window. UP_FOR_RETRY catches failures that were
+    retried (and may have later succeeded), which BQ misses entirely since it
+    only records the final task state.
+
+    Returns a list of unique (dag_id, task_id) failures with metadata.
+    Cloud Logging has 30-day retention — for older historical queries, callers
+    should fall back to BQ.
+    """
+    since_str = since.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    query = (
+        'resource.type="k8s_container" AND '
+        f'resource.labels.namespace_name="{LOGGING_NAMESPACE}" AND '
+        'textPayload=~"Marking task as (FAILED|UP_FOR_RETRY)" AND '
+        f'timestamp>="{since_str}"'
+    )
+    if as_of:
+        as_of_str = as_of.strftime('%Y-%m-%dT%H:%M:%SZ')
+        query += f' AND timestamp<="{as_of_str}"'
+
+    cmd = [
+        'gcloud', 'logging', 'read', query,
+        f'--project={LOGGING_PROJECT}',
+        '--limit=500',
+        '--format=value(timestamp,textPayload)',
+    ]
+
+    if verbose:
+        print(f"Querying Cloud Logging for task failures since {since_str}...", file=sys.stderr)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Error querying Cloud Logging: {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse events and group by (dag_id, task_id)
+    task_failures = {}  # (dag_id, task_id) -> {first_failure, last_failure, failure_count, run_ids}
+    for line in result.stdout.strip().split('\n'):
+        if not line:
+            continue
+        parsed = _parse_log_line(line)
+        if not parsed:
+            continue
+
+        key = (parsed['dag_id'], parsed['task_id'])
+        event_time = parsed['event_time']
+        run_id = parsed.get('run_id', '')
+
+        if key not in task_failures:
+            task_failures[key] = {
+                'dag_id': parsed['dag_id'],
+                'task_id': parsed['task_id'],
+                'first_failure': event_time,
+                'last_failure': event_time,
+                'failure_count': 1,
+                'run_id': run_id,
+                'issue_type': 'failed',
+            }
+        else:
+            entry = task_failures[key]
+            entry['failure_count'] += 1
+            if event_time < entry['first_failure']:
+                entry['first_failure'] = event_time
+            if event_time > entry['last_failure']:
+                entry['last_failure'] = event_time
+                entry['run_id'] = run_id  # keep most recent run_id
+
+    failures = list(task_failures.values())
+    if verbose:
+        print(f"  Cloud Logging found {len(failures)} unique failing tasks ({sum(f['failure_count'] for f in failures)} total failure events)", file=sys.stderr)
+
+    return failures
+
+
+def discover_successes_from_logs(since: datetime, as_of: Optional[datetime] = None,
+                                 verbose: bool = False) -> dict:
+    """Discover task successes from Cloud Logging.
+
+    Returns a dict mapping (dag_id, task_id) -> latest success timestamp.
+    Used to filter out failures that have since recovered.
+    """
+    since_str = since.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    query = (
+        'resource.type="k8s_container" AND '
+        f'resource.labels.namespace_name="{LOGGING_NAMESPACE}" AND '
+        'textPayload=~"Marking task as SUCCESS" AND '
+        f'timestamp>="{since_str}"'
+    )
+    if as_of:
+        as_of_str = as_of.strftime('%Y-%m-%dT%H:%M:%SZ')
+        query += f' AND timestamp<="{as_of_str}"'
+
+    cmd = [
+        'gcloud', 'logging', 'read', query,
+        f'--project={LOGGING_PROJECT}',
+        '--limit=2000',
+        '--format=value(timestamp,textPayload)',
+    ]
+
+    if verbose:
+        print(f"Querying Cloud Logging for task successes since {since_str}...", file=sys.stderr)
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Error querying Cloud Logging: {result.stderr.strip()}", file=sys.stderr)
+        return {}
+
+    successes = {}  # (dag_id, task_id) -> latest success timestamp
+    for line in result.stdout.strip().split('\n'):
+        if not line:
+            continue
+        parsed = _parse_log_line(line)
+        if not parsed:
+            continue
+
+        key = (parsed['dag_id'], parsed['task_id'])
+        event_time = parsed['event_time']
+        if key not in successes or event_time > successes[key]:
+            successes[key] = event_time
+
+    if verbose:
+        print(f"  Found {len(successes)} tasks with successful runs", file=sys.stderr)
+
+    return successes
+
+
+def filter_unrecovered(failures: list, successes: dict, verbose: bool = False) -> list:
+    """Filter failures to those not recovered by a later success.
+
+    A failure is 'unrecovered' if there is no success event after the last failure.
+    """
+    unrecovered = []
+    for f in failures:
+        key = (f['dag_id'], f['task_id'])
+        latest_success = successes.get(key)
+        if latest_success and latest_success > f['last_failure']:
+            if verbose:
+                print(f"  {f['dag_id']}.{f['task_id']} -> recovered (success at {latest_success})", file=sys.stderr)
+            continue
+        unrecovered.append(f)
+
+    if verbose:
+        recovered = len(failures) - len(unrecovered)
+        print(f"  {recovered} tasks recovered since failure, {len(unrecovered)} still failing", file=sys.stderr)
+
+    return unrecovered
+
+
+def check_targeted_successes(failures: list, since: datetime,
+                             as_of: Optional[datetime] = None,
+                             verbose: bool = False) -> list:
+    """Targeted success check for remaining unrecovered failures.
+
+    The broad success query can hit its limit and miss events. This does a
+    per-task query for any failures that survived the first pass, to confirm
+    they really never recovered.
+    """
+    if not failures:
+        return failures
+
+    since_str = since.strftime('%Y-%m-%dT%H:%M:%SZ')
+    as_of_str = as_of.strftime('%Y-%m-%dT%H:%M:%SZ') if as_of else None
+
+    def check_one(f: dict) -> Optional[str]:
+        """Return success timestamp if task recovered, else None."""
+        query = (
+            'resource.type="k8s_container" AND '
+            f'resource.labels.namespace_name="{LOGGING_NAMESPACE}" AND '
+            'textPayload=~"Marking task as SUCCESS" AND '
+            f'textPayload=~"dag_id={f["dag_id"]}" AND '
+            f'textPayload=~"task_id={f["task_id"]}" AND '
+            f'timestamp>="{since_str}"'
+        )
+        if as_of_str:
+            query += f' AND timestamp<="{as_of_str}"'
+
+        cmd = [
+            'gcloud', 'logging', 'read', query,
+            f'--project={LOGGING_PROJECT}',
+            '--limit=5',
+            '--format=value(timestamp,textPayload)',
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        for line in result.stdout.strip().split('\n'):
+            parsed = _parse_log_line(line)
+            if parsed:
+                return parsed['event_time']
+        return None
+
+    if verbose:
+        print(f"  Targeted success check for {len(failures)} remaining failures...", file=sys.stderr)
+
+    still_failing = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_failure = {executor.submit(check_one, f): f for f in failures}
+        for future in concurrent.futures.as_completed(future_to_failure):
+            f = future_to_failure[future]
+            try:
+                success_ts = future.result()
+            except Exception:
+                still_failing.append(f)
+                continue
+
+            if success_ts and success_ts > f['last_failure']:
+                if verbose:
+                    print(f"  {f['dag_id']}.{f['task_id']} -> recovered (targeted check: {success_ts})", file=sys.stderr)
+            else:
+                still_failing.append(f)
+
+    if verbose:
+        recovered = len(failures) - len(still_failing)
+        if recovered:
+            print(f"  Targeted check recovered {recovered} more tasks", file=sys.stderr)
+
+    return still_failing
+
+
+def query_excluded_dags(verbose: bool = False) -> set:
+    """Get DAGs that should be excluded from triage (no_triage tag or paused/inactive)."""
+    sql = f"""
+    SELECT DISTINCT dag_id FROM (
+      SELECT dag_id FROM `{BQ_DAG_TAGS}` WHERE tag_name = 'triage/no_triage'
+      UNION ALL
+      SELECT dag_id FROM `{BQ_DAG}` WHERE is_active = FALSE OR is_paused = TRUE
+    )
+    """
+    if verbose:
+        print("Querying BQ for excluded DAGs (no_triage, paused, inactive)...", file=sys.stderr)
+    rows = run_bq_query(sql, verbose)
+    excluded = {row['dag_id'] for row in rows}
+    if verbose:
+        print(f"  {len(excluded)} DAGs excluded", file=sys.stderr)
+    return excluded
+
+
+def classify_failures(failures: list, since: datetime, as_of: datetime,
+                      verbose: bool = False) -> list:
+    """Classify failures as 'new' or 'ongoing' using BQ history.
+
+    A failure is 'ongoing' if it had unrecovered failures before the --since window.
+    Otherwise it is 'new'. Also enriches with DAG-level owners from BQ.
+    """
+    if not failures:
+        return []
+
+    failure_since = since.strftime('%Y-%m-%dT%H:%M:%SZ')
+    as_of_str = as_of.strftime('%Y-%m-%dT%H:%M:%SZ')
+    recovery_since = (since - timedelta(days=RECOVERY_LOOKBACK_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # Build a list of (dag_id, task_id) pairs to check
+    pairs = [(f['dag_id'], f['task_id']) for f in failures]
+    pair_filter = ' OR '.join(
+        f"(dag_id = '{sql_str(d)}' AND task_id = '{sql_str(t)}')" for d, t in pairs
+    )
+
+    sql = f"""
+    SELECT
+      dag_id,
+      task_id,
+      LOGICAL_OR(state = 'failed' AND end_date < TIMESTAMP('{failure_since}')) AS had_failure_before_window,
+      MAX(CASE WHEN state = 'failed' AND end_date < TIMESTAMP('{failure_since}') THEN end_date END) AS failure_before_window,
+      MAX(CASE WHEN state = 'success' AND end_date < TIMESTAMP('{failure_since}') THEN end_date END) AS last_success_before_window
+    FROM `{BQ_TABLE}`
+    WHERE end_date >= TIMESTAMP('{recovery_since}')
+      AND end_date <= TIMESTAMP('{as_of_str}')
+      AND ({pair_filter})
+    GROUP BY dag_id, task_id
+    """
+
+    if verbose:
+        print(f"Classifying {len(failures)} failures as new/ongoing via BQ...", file=sys.stderr)
+
+    rows = run_bq_query(sql, verbose)
+    history = {}
+    for row in rows:
+        key = (row['dag_id'], row['task_id'])
+        had_before = row.get('had_failure_before_window')
+        # BQ returns booleans as strings
+        if isinstance(had_before, str):
+            had_before = had_before.lower() == 'true'
+        failure_before = row.get('failure_before_window')
+        success_before = row.get('last_success_before_window')
+        # ongoing if there was an unrecovered failure before the window
+        is_ongoing = (
+            had_before
+            and (success_before is None or failure_before > success_before)
+        )
+        history[key] = 'ongoing' if is_ongoing else 'new'
+
+    # Fetch DAG-level owners for all affected DAGs
+    dag_ids = list({f['dag_id'] for f in failures})
+    dag_filter = ', '.join(f"'{sql_str(d)}'" for d in dag_ids)
+    owner_sql = f"SELECT dag_id, owners FROM `{BQ_DAG}` WHERE dag_id IN ({dag_filter})"
+    owner_rows = run_bq_query(owner_sql, verbose=False)
+    dag_owners = {row['dag_id']: row.get('owners', '') for row in owner_rows}
+
+    classified = []
+    for f in failures:
+        key = (f['dag_id'], f['task_id'])
+        category = history.get(key, 'new')
+        classified.append({
+            **f,
+            'category': category,
+            'owners': dag_owners.get(f['dag_id'], ''),
+        })
+
+    if verbose:
+        new_count = sum(1 for f in classified if f['category'] == 'new')
+        ongoing_count = sum(1 for f in classified if f['category'] == 'ongoing')
+        print(f"  {new_count} new, {ongoing_count} ongoing", file=sys.stderr)
+
+    return classified
+
+
+def discover_resolved_from_logs(since: datetime, failures: list,
+                                successes: dict, as_of: Optional[datetime] = None,
+                                verbose: bool = False) -> list:
+    """Find tasks that were failing before --since but have recovered within the window.
+
+    Uses Cloud Logging: looks for tasks that had failures before the --since window
+    (from BQ history) and now have a success event in the current window.
+    """
+    failure_since = since.strftime('%Y-%m-%dT%H:%M:%SZ')
+    as_of_str = (as_of or datetime.now(timezone.utc)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    recovery_since = (since - timedelta(days=RECOVERY_LOOKBACK_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    # Get tasks that were failing before the window from BQ
+    sql = f"""
+    SELECT
+      f.dag_id,
+      f.task_id,
+      FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', last_failure_before) AS last_failure,
+      d.owners
+    FROM (
+      SELECT
+        dag_id,
+        task_id,
+        MAX(CASE WHEN state = 'failed' AND end_date < TIMESTAMP('{failure_since}') THEN end_date END) AS last_failure_before,
+        MAX(CASE WHEN state = 'success' AND end_date < TIMESTAMP('{failure_since}') THEN end_date END) AS last_success_before
+      FROM `{BQ_TABLE}`
+      WHERE end_date >= TIMESTAMP('{recovery_since}')
+        AND end_date <= TIMESTAMP('{as_of_str}')
+        AND dag_id NOT IN (
+          SELECT dag_id FROM `{BQ_DAG_TAGS}`
+          WHERE tag_name = 'triage/no_triage'
+        )
+      GROUP BY dag_id, task_id
+    ) f
+    LEFT JOIN `{BQ_DAG}` d USING (dag_id)
+    WHERE last_failure_before IS NOT NULL
+      AND (last_success_before IS NULL OR last_failure_before > last_success_before)
+    ORDER BY f.dag_id, f.task_id
+    """
+
+    if verbose:
+        print(f"Querying BQ for pre-window failures to check for resolution...", file=sys.stderr)
+
+    rows = run_bq_query(sql, verbose)
+
+    # Exclude tasks that are still in the current failures list
+    current_failing = {(f['dag_id'], f['task_id']) for f in failures}
+
+    resolved = []
+    for row in rows:
+        key = (row['dag_id'], row['task_id'])
+        if key in current_failing:
+            continue
+        latest_success = successes.get(key)
+        if latest_success and latest_success > row['last_failure']:
+            resolved.append({
+                'dag_id': row['dag_id'],
+                'task_id': row['task_id'],
+                'last_failure': row['last_failure'],
+                'resolved_at': latest_success,
+                'owners': row.get('owners', ''),
+                'category': 'resolved',
+                'issue_type': 'resolved',
+            })
+
+    if verbose:
+        print(f"  {len(resolved)} tasks resolved since last triage window", file=sys.stderr)
+
+    return resolved
+
+
+def query_bq_failures_fallback(since: datetime, as_of: datetime, verbose: bool = False) -> list:
+    """BQ fallback for failure discovery when Cloud Logging is unavailable (>30 days).
+
+    This is the original BQ-based approach. It misses failures that were retried
+    successfully, but is the only option for historical queries beyond Cloud
+    Logging's 30-day retention.
+    """
+    failure_since = since.strftime('%Y-%m-%dT%H:%M:%SZ')
+    as_of_str = as_of.strftime('%Y-%m-%dT%H:%M:%SZ')
+    recovery_since = (since - timedelta(days=RECOVERY_LOOKBACK_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    sql = f"""
+    SELECT
+      f.dag_id,
+      f.task_id,
+      FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', last_failure) AS last_failure,
+      FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', first_failure) AS first_failure,
+      failure_count,
+      d.owners,
+      CASE
+        WHEN had_failure_before_window
+          AND (last_success_before_window IS NULL
+               OR failure_before_window > last_success_before_window)
+        THEN 'ongoing'
+        ELSE 'new'
+      END AS category
+    FROM (
+      SELECT
+        dag_id,
+        task_id,
+        MAX(CASE WHEN state = 'failed'  THEN end_date END) AS last_failure,
+        MIN(CASE WHEN state = 'failed'  THEN end_date END) AS first_failure,
+        MAX(CASE WHEN state = 'success' THEN end_date END) AS last_success,
+        ARRAY_AGG(CASE WHEN state = 'failed' THEN run_id END IGNORE NULLS ORDER BY end_date DESC LIMIT 1)[SAFE_OFFSET(0)] AS last_failed_run_id,
+        COUNTIF(state = 'failed' AND end_date >= TIMESTAMP('{failure_since}')) AS failure_count,
+        LOGICAL_OR(state = 'failed' AND end_date < TIMESTAMP('{failure_since}')) AS had_failure_before_window,
+        MAX(CASE WHEN state = 'failed' AND end_date < TIMESTAMP('{failure_since}') THEN end_date END) AS failure_before_window,
+        MAX(CASE WHEN state = 'success' AND end_date < TIMESTAMP('{failure_since}') THEN end_date END) AS last_success_before_window
+      FROM `{BQ_TABLE}`
+      WHERE end_date >= TIMESTAMP('{recovery_since}')
+        AND end_date <= TIMESTAMP('{as_of_str}')
+        AND dag_id NOT IN (
+          SELECT dag_id FROM `{BQ_DAG_TAGS}`
+          WHERE tag_name = 'triage/no_triage'
+        )
+        AND dag_id IN (
+          SELECT dag_id FROM `{BQ_DAG}`
+          WHERE is_active = TRUE AND is_paused = FALSE
+        )
+      GROUP BY dag_id, task_id
+    ) f
+    LEFT JOIN `{BQ_DAG}` d USING (dag_id)
+    WHERE last_failure IS NOT NULL
+      AND last_failure >= TIMESTAMP('{failure_since}')
+      AND (last_success IS NULL OR last_failure > last_success)
+    ORDER BY f.dag_id, f.task_id
+    """
+
+    if verbose:
+        print(f"Querying BQ for unrecovered failures since {failure_since} as of {as_of_str}...", file=sys.stderr)
+
+    rows = run_bq_query(sql, verbose)
+    return [
+        {
+            'dag_id': row['dag_id'],
+            'task_id': row['task_id'],
+            'run_id': row.get('last_failed_run_id', ''),
+            'last_failure': row['last_failure'],
+            'first_failure': row['first_failure'],
+            'failure_count': int(row.get('failure_count', 1)),
+            'owners': row.get('owners', ''),
+            'category': row['category'],
+            'issue_type': 'failed',
+        }
+        for row in rows
+    ]
+
+
+def query_bq_resolved_fallback(since: datetime, as_of: datetime, verbose: bool = False) -> list:
+    """BQ fallback for resolved failure discovery when Cloud Logging is unavailable."""
+    failure_since = since.strftime('%Y-%m-%dT%H:%M:%SZ')
+    as_of_str = as_of.strftime('%Y-%m-%dT%H:%M:%SZ')
+    recovery_since = (since - timedelta(days=RECOVERY_LOOKBACK_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    sql = f"""
+    SELECT
+      f.dag_id,
+      f.task_id,
+      FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', last_failure_before) AS last_failure,
+      FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', recovery_time) AS resolved_at,
+      d.owners
+    FROM (
+      SELECT
+        dag_id,
+        task_id,
+        MAX(CASE WHEN state = 'failed' AND end_date < TIMESTAMP('{failure_since}') THEN end_date END) AS last_failure_before,
+        MAX(CASE WHEN state = 'success' AND end_date >= TIMESTAMP('{failure_since}') THEN end_date END) AS recovery_time,
+        MAX(CASE WHEN state = 'success' AND end_date < TIMESTAMP('{failure_since}') THEN end_date END) AS last_success_before
+      FROM `{BQ_TABLE}`
+      WHERE end_date >= TIMESTAMP('{recovery_since}')
+        AND end_date <= TIMESTAMP('{as_of_str}')
+        AND dag_id NOT IN (
+          SELECT dag_id FROM `{BQ_DAG_TAGS}`
+          WHERE tag_name = 'triage/no_triage'
+        )
+      GROUP BY dag_id, task_id
+    ) f
+    LEFT JOIN `{BQ_DAG}` d USING (dag_id)
+    WHERE last_failure_before IS NOT NULL
+      AND recovery_time IS NOT NULL
+      AND recovery_time > last_failure_before
+      AND (last_success_before IS NULL OR last_failure_before > last_success_before)
+    ORDER BY f.dag_id, f.task_id
+    """
+
+    if verbose:
+        print(f"Querying BQ for recently resolved failures as of {as_of_str}...", file=sys.stderr)
+
+    rows = run_bq_query(sql, verbose)
+    return [
+        {
+            'dag_id': row['dag_id'],
+            'task_id': row['task_id'],
+            'last_failure': row['last_failure'],
+            'resolved_at': row['resolved_at'],
+            'owners': row.get('owners', ''),
+            'category': 'resolved',
+            'issue_type': 'resolved',
+        }
+        for row in rows
+    ]
+
+
+def query_slow_running_tasks(threshold: float, since: datetime, verbose: bool = False) -> list:
+    """Find tasks currently running whose duration far exceeds their historical average.
+
+    Compares each running task's elapsed time against the average successful
+    duration over the last DURATION_HISTORY_DAYS. Flags tasks exceeding
+    threshold * avg_duration. Requires at least 3 historical samples.
+    """
+    history_since = (datetime.now(timezone.utc) - timedelta(days=DURATION_HISTORY_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    sql = f"""
+    WITH no_triage_dags AS (
+      SELECT dag_id FROM `{BQ_DAG_TAGS}`
+      WHERE tag_name = 'triage/no_triage'
+    ),
+    active_dags AS (
+      SELECT dag_id FROM `{BQ_DAG}`
+      WHERE is_active = TRUE AND is_paused = FALSE
+    ),
+    running_tasks AS (
+      SELECT
+        dag_id,
+        task_id,
+        run_id,
+        start_date,
+        TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_date, SECOND) AS elapsed_seconds
+      FROM `{BQ_TABLE}`
+      WHERE state = 'running'
+        AND start_date IS NOT NULL
+        AND dag_id NOT IN (SELECT dag_id FROM no_triage_dags)
+        AND dag_id IN (SELECT dag_id FROM active_dags)
+    ),
+    historical_durations AS (
+      SELECT
+        dag_id,
+        task_id,
+        AVG(duration) AS avg_duration,
+        STDDEV(duration) AS stddev_duration,
+        COUNT(*) AS sample_count
+      FROM `{BQ_TABLE}`
+      WHERE state = 'success'
+        AND duration IS NOT NULL
+        AND duration > 0
+        AND end_date >= TIMESTAMP('{history_since}')
+      GROUP BY dag_id, task_id
+    )
+    SELECT
+      r.dag_id,
+      r.task_id,
+      r.run_id,
+      FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', r.start_date) AS start_date,
+      r.elapsed_seconds,
+      ROUND(h.avg_duration, 1) AS avg_duration_seconds,
+      h.sample_count,
+      ROUND(r.elapsed_seconds / h.avg_duration, 1) AS duration_ratio
+    FROM running_tasks r
+    JOIN historical_durations h
+      ON r.dag_id = h.dag_id AND r.task_id = h.task_id
+    WHERE h.avg_duration > 0
+      AND h.sample_count >= 3
+      AND r.elapsed_seconds > h.avg_duration * {threshold}
+    ORDER BY duration_ratio DESC
+    """
+
+    if verbose:
+        print(f"Querying for slow running tasks (>{threshold}x avg duration)...", file=sys.stderr)
+
+    rows = run_bq_query(sql, verbose)
+    since_str = since.strftime('%Y-%m-%dT%H:%M:%SZ')
+    return [
+        {
+            'dag_id': row['dag_id'],
+            'task_id': row['task_id'],
+            'run_id': row.get('run_id'),
+            'start_date': row['start_date'],
+            'elapsed_seconds': int(row['elapsed_seconds']),
+            'avg_duration_seconds': float(row['avg_duration_seconds']),
+            'duration_ratio': float(row['duration_ratio']),
+            'sample_count': int(row['sample_count']),
+            'issue_type': 'slow',
+            'category': 'ongoing' if row['start_date'] < since_str else 'new',
+        }
+        for row in rows
+    ]
+
+
+def _reconstruct_pod_message(tail: str) -> Optional[str]:
+    """Extract error message from Python repr of pod status in Airflow logs.
+
+    Pod status is pretty-printed as Python repr with implicit string concatenation:
+        'message': 'BigQuery '           (short messages: 'message' + continuations)
+                   'error '
+                   'operation: ...\n',
+
+    For long messages (tracebacks), the 'message' key may be outside the tail.
+    In that case, look for exception class names in quoted continuation strings
+    and reconstruct the error from there.
+    """
+    lines = tail.split('\n')
+
+    # Strategy 1: Find 'message': key and join continuation lines
+    for i, line in enumerate(lines):
+        m = re.search(r"'message':\s*'(.*)'", line)
+        if not m:
+            continue
+        if "'message': None" in line:
+            continue
+        parts = [m.group(1)]
+        for j in range(i + 1, min(i + 80, len(lines))):
+            cont = lines[j].strip()
+            cm = re.match(r"^'(.*)'[,}]?\s*$", cont)
+            if cm:
+                parts.append(cm.group(1))
+            else:
+                break
+        msg = ''.join(parts).replace('\\n', '\n').strip()
+        if msg and len(msg) > 10:
+            msg_lines = [l.strip() for l in msg.split('\n') if l.strip()]
+            for ml in reversed(msg_lines):
+                if re.match(r'^[A-Za-z_.]+(?:Error|Exception|CalledProcessError):', ml):
+                    return ml[:300]
+            first_line = msg_lines[0] if msg_lines else msg
+            if len(first_line) > 10:
+                return first_line[:300]
+
+    # Strategy 2: For long messages where 'message' key is outside the tail,
+    # find exception class names in quoted continuation strings and reassemble.
+    # Python repr uses both single and double quotes for continuation strings.
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        m = re.match(r"""^'([A-Za-z_.]+(?:Error|Exception|CalledProcessError):\s*)(.*)'[,]?\s*$""", stripped)
+        if not m:
+            continue
+        parts = [m.group(1) + m.group(2)]
+        for j in range(i + 1, min(i + 20, len(lines))):
+            cont = lines[j].strip()
+            # Match both 'text' and "text" continuation styles
+            cm = re.match(r"""^(['"])(.*)\1[,}]?\s*$""", cont)
+            if cm:
+                parts.append(cm.group(2))
+            else:
+                break
+        msg = ''.join(parts).replace('\\n', '\n').strip()
+        if msg and len(msg) > 10:
+            first_line = msg.split('\n')[0].strip()
+            return first_line[:300]
+
+    return None
+
+
+def _extract_error_snippet(tail: str) -> Optional[str]:
+    """Extract the most relevant error line from the tail of an Airflow task log."""
+    lines = [l.strip() for l in tail.split('\n') if l.strip()]
+
+    # Pass 1: Python exception lines (most specific, e.g. "TypeError: ...")
+    for line in reversed(lines):
+        if re.match(r'^[A-Za-z_.]+(?:Error|Exception):', line):
+            return line[:300]
+
+    # Pass 2: AirflowException in traceback (e.g. "airflow.exceptions.AirflowException: ...")
+    for line in reversed(lines):
+        m = re.search(r'AirflowException:\s*(.+)', line)
+        if m:
+            msg = m.group(1).strip()
+            if msg and 'returned a failure' not in msg:
+                return msg[:300]
+
+    # Pass 3: Pod termination message (multi-line Python repr of pod status)
+    # The message field is often spread across many continuation lines
+    pod_msg = _reconstruct_pod_message(tail)
+    if pod_msg:
+        return pod_msg
+
+    # Pass 4: GKEPodOperator [base] output (errors from the container itself)
+    for line in reversed(lines):
+        m = re.search(r'\[base\]\s+(.+)', line)
+        if m:
+            msg = m.group(1).strip()
+            # Skip progress lines and generic markers
+            if msg and not re.match(r'(Waiting on|Traceback|File "|^\s*$)', msg):
+                if 'error' in msg.lower() or 'fail' in msg.lower() or 'exception' in msg.lower():
+                    return msg[:300]
+
+    # Pass 5: Airflow ERROR log lines, strip the log prefix
+    for line in reversed(lines):
+        m = re.search(r'\bERROR\b\s*-\s*(.+)', line)
+        if m:
+            msg = m.group(1).strip()
+            if msg and 'Marking task as FAILED' not in msg and 'Task failed with exception' not in msg:
+                return msg[:300]
+
+    return None
+
+
+def _check_task_attempt_gcs(dag_id: str, task_id: str, run_id: str,
+                             verbose: bool = False) -> tuple[Optional[str], Optional[str]]:
+    """Read GCS logs for a specific dag/task/run and return (status, error_snippet).
+
+    status: 'success', 'failed', 'running' (no terminal marker yet), or None
+    if no log file exists for this run.
+    error_snippet: a short error string extracted from the log, or None.
+    """
+    attempt_path = f"{GCS_BUCKET}/dag_id={dag_id}/run_id={run_id}/task_id={task_id}/"
+    result = subprocess.run(['gcloud', 'storage', 'ls', attempt_path], capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None, None
+
+    attempts = []
+    for line in result.stdout.strip().split('\n'):
+        match = re.search(r'attempt=(\d+)\.log', line)
+        if match:
+            attempts.append(int(match.group(1)))
+    if not attempts:
+        return None, None
+    latest_attempt = max(attempts)
+
+    log_path = f"{GCS_BUCKET}/dag_id={dag_id}/run_id={run_id}/task_id={task_id}/attempt={latest_attempt}.log"
+    result = subprocess.run(['gcloud', 'storage', 'cat', log_path], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None, None
+
+    tail = '\n'.join(result.stdout.strip().split('\n')[-60:])
+
+    if 'Marking task as SUCCESS' in tail:
+        return 'success', None
+    if 'Task exited with return code 0' in tail and 'Marking task as FAILED' not in tail:
+        return 'success', None
+    if 'Marking task as FAILED' in tail or 'Task exited with return code 1' in tail:
+        return 'failed', _extract_error_snippet(tail)
+
+    return 'running', None
+
+
+def check_task_status_gcs(dag_id: str, task_id: str, run_id: Optional[str] = None,
+                          verbose: bool = False) -> tuple[Optional[str], Optional[str]]:
+    """Check the most recent completed status of a task from GCS logs.
+
+    If run_id is provided, checks that specific run. Otherwise iterates through
+    the 10 most recent DAG runs from newest to oldest, stopping at the first run
+    where the task has a completed log. This avoids false positives when a newer
+    DAG run exists but hasn't reached this task yet.
+
+    Returns: (status, error_snippet) where status is 'success', 'failed', or None.
+    """
+    if run_id:
+        status, snippet = _check_task_attempt_gcs(dag_id, task_id, run_id, verbose)
+        return (status, snippet) if status in ('success', 'failed') else (None, None)
+
+    path = f"{GCS_BUCKET}/dag_id={dag_id}/"
+    result = subprocess.run(['gcloud', 'storage', 'ls', path], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None, None
+
+    runs = []
+    for line in result.stdout.strip().split('\n'):
+        if not line:
+            continue
+        match = re.search(r'run_id=([^/]+)', line)
+        if match:
+            runs.append(match.group(1))
+    if not runs:
+        return None, None
+    runs.sort(reverse=True)
+
+    for candidate_run_id in runs[:10]:
+        if verbose:
+            print(f"    Checking run {candidate_run_id}", file=sys.stderr)
+        status, snippet = _check_task_attempt_gcs(dag_id, task_id, candidate_run_id, verbose)
+        if status in ('success', 'failed'):
+            return status, snippet
+        if status == 'running':
+            return None, None
+        # status is None: task hasn't run in this run yet, try the next older one
+
+    return None, None
+
+
+def _verify_single_failure(item: dict, verbose: bool = False) -> Optional[dict]:
+    """Verify a single failure against GCS logs. Returns enriched item or None if recovered."""
+    dag_id = item['dag_id']
+    task_id = item['task_id']
+    run_id = item.get('run_id') or None
+
+    if verbose:
+        print(f"  Verifying via GCS: {dag_id}.{task_id}", file=sys.stderr, flush=True)
+
+    status, snippet = check_task_status_gcs(dag_id, task_id, run_id=run_id, verbose=False)
+
+    if status == 'success':
+        if verbose:
+            print(f"    {dag_id}.{task_id} -> Recovered (skipping)", file=sys.stderr, flush=True)
+        return None
+
+    return {**item, 'error_snippet': snippet}
+
+
+def verify_failures_with_gcs(failures: list, verbose: bool = False) -> list:
+    """Verify failures against GCS logs, filtering out tasks that have recovered.
+
+    Attaches 'error_snippet' to each confirmed failure.
+    Uses parallel I/O to check multiple tasks concurrently.
+    """
+    max_workers = min(8, len(failures)) if failures else 1
+    verified = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_verify_single_failure, item, verbose): item
+            for item in failures
+        }
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if result is not None:
+                verified.append(result)
+
+    # Preserve original ordering (as_completed returns in completion order)
+    order = {(item['dag_id'], item['task_id']): i for i, item in enumerate(failures)}
+    verified.sort(key=lambda x: order.get((x['dag_id'], x['task_id']), 0))
+
+    return verified
+
+
+def _verify_single_slow_task(item: dict, verbose: bool = False) -> Optional[dict]:
+    """Verify a single slow task against GCS. Returns item or None if completed."""
+    dag_id = item['dag_id']
+    task_id = item['task_id']
+    run_id = item['run_id']
+
+    if verbose:
+        print(f"  Verifying slow task via GCS: {dag_id}.{task_id}", file=sys.stderr, flush=True)
+
+    status, _ = _check_task_attempt_gcs(dag_id, task_id, run_id, verbose=False)
+
+    if status in ('success', 'failed'):
+        if verbose:
+            print(f"    {dag_id}.{task_id} -> Already completed ({status}), skipping", file=sys.stderr, flush=True)
+        return None
+
+    return item
+
+
+def verify_slow_tasks_with_gcs(slow_tasks: list, verbose: bool = False) -> list:
+    """Filter slow tasks to those actually still running in GCS.
+
+    BQ's 'running' state is from a daily snapshot and can be stale — a task
+    that completed hours ago may still appear as running in BQ. Checks GCS
+    logs concurrently for each task's run_id.
+    """
+    max_workers = min(8, len(slow_tasks)) if slow_tasks else 1
+    verified = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_verify_single_slow_task, item, verbose): item
+            for item in slow_tasks
+        }
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if result is not None:
+                verified.append(result)
+
+    # Preserve original ordering
+    order = {(item['dag_id'], item['task_id']): i for i, item in enumerate(slow_tasks)}
+    verified.sort(key=lambda x: order.get((x['dag_id'], x['task_id']), 0))
+
+    return verified
+
+
+def parse_task_id(task_id: str) -> Optional[tuple[str, str, str]]:
+    """Extract (dataset, table, version) from a bqetl Airflow task ID.
+
+    Handles the standard prefixes generated by task.py:
+      {dataset}__{table}__{version}
+      checks__warn_{dataset}__{table}__{version}
+      checks__fail_{dataset}__{table}__{version}
+      bigeye__{dataset}__{table}__{version}
+
+    Returns None for task IDs that don't follow this convention
+    (e.g. sensor tasks, custom tasks).
+    """
+    for prefix in ('checks__warn_', 'checks__fail_', 'bigeye__'):
+        if task_id.startswith(prefix):
+            task_id = task_id[len(prefix):]
+            break
+
+    parts = task_id.split('__')
+    if len(parts) < 3:
+        return None
+
+    dataset = parts[0]
+    version = parts[-1]
+    table = '_'.join(parts[1:-1])
+
+    if not re.match(r'^v\d+$', version):
+        return None
+
+    return dataset, table, version
+
+
+def lookup_task_owners(task_id: str, bqetl_path: str) -> Optional[list]:
+    """Look up task-level owners from metadata.yaml in a local bigquery-etl checkout.
+
+    Returns a list of owner emails, or None if no metadata file is found.
+    """
+    parsed = parse_task_id(task_id)
+    if not parsed:
+        return None
+
+    dataset, table, version = parsed
+    pattern = os.path.join(
+        bqetl_path, 'sql', '*', dataset, f'{table}_{version}', 'metadata.yaml'
+    )
+    matches = glob.glob(pattern)
+    if not matches:
+        return None
+
+    try:
+        import yaml
+    except ImportError:
+        return None
+
+    with open(matches[0]) as f:
+        metadata = yaml.safe_load(f)
+
+    owners = metadata.get('owners', [])
+    return owners if owners else None
+
+
+def enrich_with_task_owners(items: list, bqetl_path: str, verbose: bool = False) -> list:
+    """Set a single primary owner on each item for Slack @-mentioning.
+
+    Priority:
+      1. Task-level: owners[0] from metadata.yaml (exact match for the failing task)
+      2. DAG-level fallback: first owner from mozdata.monitoring.airflow_dag
+
+    Adds an `owner` field (singular, one email) alongside the existing `owners`
+    field (full comma-separated list for reference).
+    """
+    enriched = []
+    for item in items:
+        task_id = item.get('task_id', '')
+        task_owners = lookup_task_owners(task_id, bqetl_path)
+
+        if task_owners:
+            owner = task_owners[0]
+            source = 'metadata.yaml'
+        else:
+            # Fall back to first DAG-level owner
+            dag_owners = item.get('owners', '')
+            owner = dag_owners.split(',')[0].strip() if dag_owners else ''
+            source = 'dag'
+
+        if verbose:
+            print(f"  {item['dag_id']}.{task_id} -> {owner} (from {source})", file=sys.stderr)
+
+        enriched.append({**item, 'owner': owner})
+    return enriched
+
+
+def collapse_sensor_failures(failures: list, verbose: bool = False) -> list:
+    """Remove wait_for_ sensor tasks and annotate root-cause tasks with blocked downstream DAGs.
+
+    Sensor tasks (task_id starting with 'wait_for_') fail because the upstream
+    task they're waiting on has failed. Showing them individually is noise —
+    instead, we attach a 'blocked_downstream' list to the root-cause task so
+    the triage summary shows which DAGs are affected.
+
+    Sensors whose upstream task isn't in the failure list are kept as-is (they
+    may be waiting on something outside the triage window or a different issue).
+    """
+    root_tasks = []
+    sensors = []
+    for f in failures:
+        if f['task_id'].startswith('wait_for_'):
+            sensors.append(f)
+        else:
+            root_tasks.append(f)
+
+    if not sensors:
+        return root_tasks
+
+    # Build a lookup of root tasks by their task_id suffix (the part sensors wait for)
+    # e.g. root task "checks__fail_fenix_derived__firefox_android_clients__v1"
+    # is waited on by sensor "wait_for_checks__fail_fenix_derived__firefox_android_clients__v1"
+    root_by_task_id = {}
+    for rt in root_tasks:
+        root_by_task_id[rt['task_id']] = rt
+
+    # Match sensors to root tasks. All wait_for_ sensors are removed from the
+    # output — they're downstream noise. Those that match a root task directly
+    # get attributed; unmatched ones are attributed to the root task with the
+    # most direct matches (likely the cascade origin).
+    for rt in root_tasks:
+        rt['blocked_downstream'] = []
+
+    unattributed_dags = []
+    for sensor in sensors:
+        upstream_task_id = sensor['task_id'][len('wait_for_'):]
+        if upstream_task_id in root_by_task_id:
+            root_by_task_id[upstream_task_id]['blocked_downstream'].append(sensor['dag_id'])
+        else:
+            unattributed_dags.append(sensor['dag_id'])
+
+    # Deduplicate downstream DAG lists (a DAG may have multiple waiting sensors)
+    for rt in root_tasks:
+        rt['blocked_downstream'] = sorted(set(rt['blocked_downstream']))
+
+    if verbose:
+        attributed = len(sensors) - len(unattributed_dags)
+        print(f"  {len(sensors)} sensor tasks suppressed ({attributed} directly attributed, {len(unattributed_dags)} unmatched)", file=sys.stderr)
+        for rt in root_tasks:
+            if rt['blocked_downstream']:
+                print(f"    {rt['dag_id']}.{rt['task_id']} blocks {len(rt['blocked_downstream'])} downstream DAGs", file=sys.stderr)
+
+    return root_tasks
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Get failing and anomalously-slow DAGs/tasks for triage.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument('--since', '-s', default='24h',
+                        help='Failure window (default: 24h). Use 3d after weekends.')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='Show progress on stderr')
+    parser.add_argument('--slow-threshold', type=float, default=DEFAULT_SLOW_THRESHOLD,
+                        help=f'Flag running tasks exceeding Nx avg duration (default: {DEFAULT_SLOW_THRESHOLD})')
+    parser.add_argument('--no-slow', action='store_true',
+                        help='Skip slow-running task detection')
+    parser.add_argument('--bqetl-repo', default=os.path.expanduser('~/bigquery-etl'),
+                        help='Path to bigquery-etl checkout for task-level owner lookup '
+                             '(default: ~/bigquery-etl). Skipped if path does not exist.')
+    parser.add_argument('--as-of', default=None,
+                        help='Treat this timestamp as "now" (e.g. 2026-04-12). '
+                             'Uses Cloud Logging if within 30 days, otherwise BQ fallback. '
+                             'GCS verification and slow-task detection are skipped.')
+    args = parser.parse_args()
+
+    if args.as_of:
+        try:
+            as_of = parse_since(args.as_of)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        as_of = datetime.now(timezone.utc)
+
+    try:
+        since = parse_since(args.since, reference=as_of if args.as_of else None)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Verify GCP authentication before running any queries
+    auth_check = subprocess.run(
+        ['gcloud', 'auth', 'print-access-token'],
+        capture_output=True, text=True, timeout=10)
+    if auth_check.returncode != 0 or 'ERROR' in auth_check.stderr:
+        print("Error: Not authenticated to GCP. Run: gcloud auth login", file=sys.stderr)
+        sys.exit(2)
+
+    # Check if Cloud Logging is available for this time window (30-day retention)
+    thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+    use_cloud_logging = since >= thirty_days_ago
+
+    if use_cloud_logging:
+        # Steps 1+2+excluded: Run Cloud Logging queries and BQ exclusion query in parallel
+        # (failures, successes, and excluded_dags are all independent)
+        if args.verbose:
+            print("=== Steps 1-2: Discover failures + successes from Cloud Logging ===", file=sys.stderr)
+
+        as_of_arg = as_of if args.as_of else None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            future_failures = executor.submit(
+                discover_failures_from_logs, since, as_of=as_of_arg, verbose=args.verbose)
+            future_successes = executor.submit(
+                discover_successes_from_logs, since, as_of=as_of_arg, verbose=args.verbose)
+            future_excluded = executor.submit(
+                query_excluded_dags, verbose=args.verbose)
+
+            raw_failures = future_failures.result()
+            successes = future_successes.result()
+            excluded_dags = future_excluded.result()
+
+        # 3. Filter out recovered failures
+        if args.verbose:
+            print("=== Step 3: Filter recovered failures ===", file=sys.stderr)
+        unrecovered = filter_unrecovered(raw_failures, successes, verbose=args.verbose)
+
+        # 3b. Targeted success check for remaining failures (broad query may have hit limit)
+        if unrecovered:
+            unrecovered = check_targeted_successes(
+                unrecovered, since, as_of=as_of_arg, verbose=args.verbose)
+
+        # 4. Apply exclusions
+        unrecovered = [f for f in unrecovered if f['dag_id'] not in excluded_dags]
+        if args.verbose:
+            print(f"  {len(unrecovered)} failures after exclusions", file=sys.stderr)
+
+        # 5. Classify as new/ongoing via BQ history + get owners
+        if args.verbose:
+            print("=== Step 5: Classify new/ongoing via BQ ===", file=sys.stderr)
+        failures = classify_failures(unrecovered, since, as_of, verbose=args.verbose)
+
+        # 6. Verify against GCS logs (real-time, also extracts error snippets)
+        if args.as_of:
+            if args.verbose:
+                print("  Skipping GCS verification (--as-of: historical mode)", file=sys.stderr)
+        else:
+            if args.verbose:
+                print("=== Step 6: Verifying against GCS logs ===", file=sys.stderr)
+            before_count = len(failures)
+            failures = verify_failures_with_gcs(failures, verbose=args.verbose)
+            if args.verbose:
+                removed = before_count - len(failures)
+                print(f"  {removed} tasks recovered since Cloud Logging snapshot", file=sys.stderr)
+
+        # 7. Resolved failures (had pre-window failure, now recovered)
+        if args.verbose:
+            print("=== Step 7: Recently resolved failures ===", file=sys.stderr)
+        resolved = discover_resolved_from_logs(
+            since, failures, successes, as_of=as_of_arg, verbose=args.verbose)
+
+    else:
+        # Fallback to BQ for historical queries beyond Cloud Logging retention
+        if args.verbose:
+            print("=== Cloud Logging unavailable (>30 days), falling back to BQ ===", file=sys.stderr)
+            print("=== Step 1: BQ baseline failures (new + ongoing) ===", file=sys.stderr)
+        failures = query_bq_failures_fallback(since, as_of, verbose=args.verbose)
+        if args.verbose:
+            new_count = sum(1 for f in failures if f['category'] == 'new')
+            ongoing_count = sum(1 for f in failures if f['category'] == 'ongoing')
+            print(f"  BQ reports {len(failures)} unrecovered ({new_count} new, {ongoing_count} ongoing)", file=sys.stderr)
+
+        if args.verbose:
+            print("=== Step 2: Recently resolved failures (BQ) ===", file=sys.stderr)
+        resolved = query_bq_resolved_fallback(since, as_of, verbose=args.verbose)
+        if args.verbose:
+            print(f"  {len(resolved)} tasks resolved since last triage window", file=sys.stderr)
+
+    # Slow running tasks (skipped for historical --as-of; BQ uses CURRENT_TIMESTAMP())
+    slow = []
+    if not args.no_slow and not args.as_of:
+        if args.verbose:
+            print("=== Checking for slow running tasks ===", file=sys.stderr)
+        bq_slow = query_slow_running_tasks(args.slow_threshold, since, verbose=args.verbose)
+        if args.verbose:
+            print(f"  BQ reports {len(bq_slow)} slow tasks", file=sys.stderr)
+
+        # Verify slow tasks against GCS (BQ running state may be stale)
+        if args.verbose:
+            print("=== Verifying slow tasks against GCS logs ===", file=sys.stderr)
+        slow = verify_slow_tasks_with_gcs(bq_slow, verbose=args.verbose)
+        if args.verbose:
+            removed = len(bq_slow) - len(slow)
+            print(f"  {removed} slow tasks already completed since BQ snapshot", file=sys.stderr)
+
+    # Enrich with task-level owners from metadata.yaml if repo is available
+    bqetl_path = args.bqetl_repo
+    if os.path.isdir(bqetl_path):
+        if args.verbose:
+            print(f"=== Enriching with task-level owners from {bqetl_path} ===", file=sys.stderr)
+        failures = enrich_with_task_owners(failures, bqetl_path, verbose=args.verbose)
+        resolved = enrich_with_task_owners(resolved, bqetl_path, verbose=args.verbose)
+        slow = enrich_with_task_owners(slow, bqetl_path, verbose=args.verbose)
+    elif args.verbose:
+        print(f"  Skipping task-level owner lookup (repo not found at {bqetl_path})", file=sys.stderr)
+
+    # Collapse wait_for_ sensor failures into their root-cause tasks
+    if args.verbose:
+        print("=== Collapsing sensor task failures ===", file=sys.stderr)
+    failures = collapse_sensor_failures(failures, verbose=args.verbose)
+    resolved = collapse_sensor_failures(resolved, verbose=args.verbose)
+
+    if args.verbose:
+        new_count = sum(1 for f in failures if f['category'] == 'new')
+        ongoing_count = sum(1 for f in failures if f['category'] == 'ongoing')
+        print(f"\nTotal: {new_count} new, {ongoing_count} ongoing, {len(resolved)} resolved, {len(slow)} slow", file=sys.stderr)
+
+    print(json.dumps(failures + resolved + slow, indent=2))
+
+
+if __name__ == '__main__':
+    main()

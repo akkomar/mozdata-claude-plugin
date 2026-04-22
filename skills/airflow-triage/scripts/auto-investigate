@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""Auto-investigate new Airflow failures from triage pipeline output.
+
+For each "new" failure, fetches detailed logs, maps to source code,
+searches for recent GitHub PRs, and generates a draft description for
+the Slack triage message.
+
+Ongoing failures with existing bugs are passed through with their
+bug summary as the description.
+
+Usage:
+    scripts/get-triage-data | scripts/get-bugs | scripts/auto-investigate
+    scripts/auto-investigate --failures triage.json
+    scripts/auto-investigate --failures triage.json --bqetl-repo ~/bigquery-etl
+"""
+
+import argparse
+import concurrent.futures
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+GCS_BUCKET = "gs://airflow-remote-logs-prod-prod"
+BQETL_REPOS = ["bigquery-etl", "private-bigquery-etl"]
+
+
+def parse_task_id(task_id: str) -> Optional[tuple[str, str, str]]:
+    """Extract (dataset, table, version) from a bqetl task ID."""
+    stripped = task_id
+    for prefix in ('checks__warn_', 'checks__fail_', 'bigeye__'):
+        if stripped.startswith(prefix):
+            stripped = stripped[len(prefix):]
+            break
+
+    parts = stripped.split('__')
+    if len(parts) < 3:
+        return None
+
+    dataset = parts[0]
+    version = parts[-1]
+    table = '_'.join(parts[1:-1])
+
+    if not re.match(r'^v\d+$', version):
+        return None
+
+    return dataset, table, version
+
+
+def find_source_path(task_id: str, bqetl_path: str) -> Optional[str]:
+    """Find the source SQL/Python file for a bqetl task."""
+    parsed = parse_task_id(task_id)
+    if not parsed:
+        return None
+
+    dataset, table, version = parsed
+    # Look for query.sql or query.py
+    for ext in ('sql', 'py'):
+        pattern = os.path.join(bqetl_path, 'sql', '*', dataset, f'{table}_{version}', f'query.{ext}')
+        matches = glob.glob(pattern)
+        if matches:
+            # Return relative path from repo root
+            return os.path.relpath(matches[0], bqetl_path)
+
+    # Try script path
+    pattern = os.path.join(bqetl_path, 'sql', '*', dataset, f'{table}_{version}', 'script.sql')
+    matches = glob.glob(pattern)
+    if matches:
+        return os.path.relpath(matches[0], bqetl_path)
+
+    return None
+
+
+def search_github_prs(source_path: str, repos: list[str], days: int = 7) -> list[dict]:
+    """Search for recent merged PRs that touched the source file."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime('%Y-%m-%d')
+    prs = []
+
+    for repo in repos:
+        full_repo = f"mozilla/{repo}"
+        try:
+            cmd = [
+                'gh', 'search', 'prs',
+                '--repo', full_repo,
+                '--merged',
+                f'--merged-at=>{since}',
+                '--json', 'number,title,mergedAt,url',
+                '--limit', '10',
+                '--', source_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            if result.returncode == 0 and result.stdout.strip():
+                found = json.loads(result.stdout)
+                for pr in found:
+                    pr['repo'] = repo
+                prs.extend(found)
+        except (subprocess.TimeoutExpired, json.JSONDecodeError):
+            continue
+
+    return prs
+
+
+def fetch_log_tail(dag_id: str, task_id: str, run_id: str, lines: int = 200) -> Optional[str]:
+    """Fetch the tail of the latest attempt log from GCS."""
+    # Find latest attempt
+    attempt_path = f"{GCS_BUCKET}/dag_id={dag_id}/run_id={run_id}/task_id={task_id}/"
+    result = subprocess.run(
+        ['gcloud', 'storage', 'ls', attempt_path],
+        capture_output=True, text=True, timeout=15)
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+
+    attempts = []
+    for line in result.stdout.strip().split('\n'):
+        match = re.search(r'attempt=(\d+)\.log', line)
+        if match:
+            attempts.append(int(match.group(1)))
+    if not attempts:
+        return None
+
+    latest = max(attempts)
+    log_path = f"{GCS_BUCKET}/dag_id={dag_id}/run_id={run_id}/task_id={task_id}/attempt={latest}.log"
+    result = subprocess.run(
+        ['gcloud', 'storage', 'cat', log_path],
+        capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        return None
+
+    all_lines = result.stdout.strip().split('\n')
+    return '\n'.join(all_lines[-lines:])
+
+
+def extract_key_error_lines(log_tail: str, max_lines: int = 10) -> list[str]:
+    """Extract the most relevant error lines from a log tail for bug descriptions."""
+    lines = log_tail.split('\n')
+    error_lines = []
+
+    # Look for traceback blocks
+    in_traceback = False
+    tb_lines = []
+    for line in lines:
+        if 'Traceback (most recent call last)' in line:
+            in_traceback = True
+            tb_lines = [line]
+        elif in_traceback:
+            tb_lines.append(line)
+            if line.strip() and not line.startswith(' ') and not line.startswith('\t'):
+                # End of traceback - this is the exception line
+                in_traceback = False
+                error_lines = tb_lines[-max_lines:]
+
+    # If no traceback found, look for ERROR lines
+    if not error_lines:
+        for line in reversed(lines):
+            if 'ERROR' in line and 'Marking task as FAILED' not in line:
+                error_lines.insert(0, line.strip())
+                if len(error_lines) >= max_lines:
+                    break
+
+    return error_lines
+
+
+def generate_description(item: dict, log_tail: Optional[str],
+                         source_path: Optional[str], suspect_prs: list[dict]) -> str:
+    """Generate a one-line description for the Slack triage message.
+
+    Uses the error snippet directly — no regex classification.
+    The triager (human or LLM) reviews and edits descriptions in Phase 2.
+    """
+    desc = item.get('error_snippet', '')
+
+    # If no snippet, try to pull something from the log tail
+    if not desc and log_tail:
+        lines = log_tail.strip().split('\n')
+        # Walk backwards looking for an ERROR line or exception
+        for line in reversed(lines):
+            stripped = line.strip()
+            if any(kw in stripped for kw in ['Error', 'Exception', 'FAILED', 'ERROR']):
+                # Strip timestamp/log prefix if present
+                # Common format: [2026-04-15 ...] {taskinstance.py:...} ERROR - ...
+                m = re.search(r'(?:ERROR\s*[-—]\s*)(.*)', stripped)
+                if m:
+                    desc = m.group(1).strip()
+                else:
+                    desc = stripped
+                break
+
+    if not desc:
+        desc = "Failed (no error details available)"
+
+    # Truncate to reasonable length
+    if len(desc) > 200:
+        desc = desc[:197] + "..."
+
+    # Mention suspect PRs
+    if suspect_prs:
+        pr = suspect_prs[0]
+        desc += f" (possible cause: {pr['repo']}#{pr['number']})"
+
+    return desc
+
+
+def investigate_failure(item: dict, bqetl_path: Optional[str] = None,
+                        verbose: bool = False) -> dict:
+    """Investigate a single failure and return enriched item with investigation results."""
+    dag_id = item['dag_id']
+    task_id = item['task_id']
+    run_id = item.get('run_id')
+    category = item.get('category', 'new')
+
+    if verbose:
+        print(f"  Investigating: {dag_id}.{task_id}", file=sys.stderr, flush=True)
+
+    result = {**item}
+
+    # For ongoing failures with bugs, use the bug summary as description
+    if category == 'ongoing' and item.get('bug_id'):
+        result['description'] = item.get('bug_summary', 'Ongoing (see bug)')
+        result['investigated'] = False
+        return result
+
+    # Fetch detailed log tail
+    log_tail = None
+    if run_id:
+        log_tail = fetch_log_tail(dag_id, task_id, run_id)
+
+    # Extract key error lines for bug filing
+    if log_tail:
+        result['error_lines'] = extract_key_error_lines(log_tail)
+    else:
+        result['error_lines'] = []
+
+    # Find source path
+    source_path = None
+    if bqetl_path:
+        source_path = find_source_path(task_id, bqetl_path)
+        if source_path:
+            result['source_path'] = source_path
+            if verbose:
+                print(f"    Source: {source_path}", file=sys.stderr, flush=True)
+
+    # Search for suspect PRs
+    suspect_prs = []
+    if source_path:
+        suspect_prs = search_github_prs(source_path, BQETL_REPOS)
+        if suspect_prs:
+            result['suspect_prs'] = suspect_prs
+            if verbose:
+                for pr in suspect_prs:
+                    print(f"    Suspect PR: {pr['repo']}#{pr['number']} - {pr['title']}", file=sys.stderr, flush=True)
+
+    # Generate description
+    result['description'] = generate_description(item, log_tail, source_path, suspect_prs)
+    result['investigated'] = True
+
+    if verbose:
+        print(f"    Description: {result['description']}", file=sys.stderr, flush=True)
+
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Auto-investigate new Airflow failures from triage pipeline.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    parser.add_argument('--failures', '-f',
+                        help='JSON file with triage output (from get-bugs). Reads stdin if omitted.')
+    parser.add_argument('--bqetl-repo', default=os.path.expanduser('~/bigquery-etl'),
+                        help='Path to bigquery-etl checkout (default: ~/bigquery-etl)')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='Show progress on stderr')
+    parser.add_argument('--max-workers', type=int, default=4,
+                        help='Max parallel investigations (default: 4)')
+    args = parser.parse_args()
+
+    # Load triage data
+    if args.failures:
+        with open(args.failures) as f:
+            data = json.load(f)
+    elif not sys.stdin.isatty():
+        data = json.load(sys.stdin)
+    else:
+        print("Error: provide --failures file or pipe from get-bugs", file=sys.stderr)
+        sys.exit(1)
+
+    # Collect all items to investigate
+    all_items = [
+        item
+        for category in ['ongoing', 'new', 'resolved']
+        for item in data.get(category, [])
+    ]
+
+    bqetl_path = args.bqetl_repo if os.path.isdir(args.bqetl_repo) else None
+    if not bqetl_path and args.verbose:
+        print(f"  bigquery-etl not found at {args.bqetl_repo}, skipping source lookup", file=sys.stderr)
+
+    if args.verbose:
+        new_count = sum(1 for i in all_items if i.get('category') == 'new')
+        ongoing_count = sum(1 for i in all_items if i.get('category') == 'ongoing')
+        print(f"=== Investigating {new_count} new, {ongoing_count} ongoing failures ===", file=sys.stderr)
+
+    # Investigate in parallel
+    max_workers = min(args.max_workers, len(all_items)) if all_items else 1
+    investigated = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(investigate_failure, item, bqetl_path, args.verbose): item
+            for item in all_items
+        }
+        for future in concurrent.futures.as_completed(futures):
+            investigated.append(future.result())
+
+    # Preserve category grouping
+    result = {'ongoing': [], 'new': [], 'resolved': []}
+    for item in investigated:
+        cat = item.get('category', 'new')
+        if cat in result:
+            result[cat].append(item)
+
+    # Pass through slow tasks unchanged
+    if 'slow' in data:
+        result['slow'] = data['slow']
+
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == '__main__':
+    main()

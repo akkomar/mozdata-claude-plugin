@@ -19,12 +19,16 @@ The plugin includes skills that Claude automatically invokes when relevant — n
 How do I find probes for accessibility in Firefox Desktop?
 Write a query for Firefox Android DAU by country
 Why did the bqetl_main_summary DAG fail last night?
+Run Airflow triage for today
+Who is on Airflow triage this week?
 ```
 
 The right skill activates based on your question:
 - Probe/metric questions → probe-discovery skill
 - Query/table questions → query-writing skill
 - Airflow failures → airflow-debugging skill
+- Daily Airflow triage summaries → airflow-triage skill
+- Airflow triage rotation → airflow-triage-assignment skill
 
 ### /mozdata:ask (explicit, loads all context)
 
