@@ -114,7 +114,7 @@ def format_slow_thread(slow_items: list) -> Optional[str]:
         dag_id = item['dag_id']
         task_id = item['task_id']
         run_id = item.get('run_id')
-        ratio = int(item.get('duration_ratio', 0))
+        ratio = round(float(item.get('duration_ratio', 0)), 1)
         owner = slack_handle(item.get('owner', ''))
 
         task_url = airflow_url(dag_id, task_id, run_id)

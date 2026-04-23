@@ -289,10 +289,12 @@ def main():
         print("Error: provide --failures file or pipe from get-bugs", file=sys.stderr)
         sys.exit(1)
 
-    # Collect all items to investigate
+    # Collect items to investigate. Resolved entries lack run_id/error_snippet
+    # from get-triage-data, so investigating them would produce misleading
+    # "no error details available" descriptions and waste GitHub PR searches.
     all_items = [
         item
-        for category in ['ongoing', 'new', 'resolved']
+        for category in ['ongoing', 'new']
         for item in data.get(category, [])
     ]
 
@@ -317,8 +319,8 @@ def main():
         for future in concurrent.futures.as_completed(futures):
             investigated.append(future.result())
 
-    # Preserve category grouping
-    result = {'ongoing': [], 'new': [], 'resolved': []}
+    # Preserve category grouping. Resolved items pass through unchanged.
+    result = {'ongoing': [], 'new': [], 'resolved': list(data.get('resolved', []))}
     for item in investigated:
         cat = item.get('category', 'new')
         if cat in result:

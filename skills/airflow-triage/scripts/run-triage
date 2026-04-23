@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Runs the full airflow triage pipeline as a single command:
+#   get-triage-data -> get-bugs -> auto-investigate -> generate-slack-message
+# Stage logs go to --log (default /tmp/triage.log). Slack output on stdout.
+# Exits with the first stage's failure code (set -o pipefail).
+
+set -euo pipefail
+
+SINCE="24h"
+AS_OF=""
+VERBOSE=""
+LOG="/tmp/triage.log"
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [--since 24h] [--as-of YYYY-MM-DD] [-v] [--log PATH]
+
+Chains the four triage scripts and prints Slack message blocks on stdout.
+Stage stderr is merged into --log (default: /tmp/triage.log).
+
+If get-triage-data exits with code 2, run 'gcloud auth login' and retry.
+EOF
+    exit "${1:-0}"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --since) SINCE="$2"; shift 2;;
+        --as-of) AS_OF="$2"; shift 2;;
+        -v|--verbose) VERBOSE="-v"; shift;;
+        --log) LOG="$2"; shift 2;;
+        -h|--help) usage 0;;
+        *) echo "unknown argument: $1" >&2; usage 1;;
+    esac
+done
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+triage_args=(--since "$SINCE")
+[[ -n "$AS_OF" ]] && triage_args+=(--as-of "$AS_OF")
+[[ -n "$VERBOSE" ]] && triage_args+=("$VERBOSE")
+
+bugs_args=(--since "$SINCE")
+[[ -n "$VERBOSE" ]] && bugs_args+=("$VERBOSE")
+
+inv_args=()
+[[ -n "$VERBOSE" ]] && inv_args+=("$VERBOSE")
+
+: > "$LOG"
+"$DIR/get-triage-data" "${triage_args[@]}" 2>>"$LOG" \
+  | "$DIR/get-bugs" "${bugs_args[@]}" 2>>"$LOG" \
+  | "$DIR/auto-investigate" "${inv_args[@]}" 2>>"$LOG" \
+  | "$DIR/generate-slack-message"

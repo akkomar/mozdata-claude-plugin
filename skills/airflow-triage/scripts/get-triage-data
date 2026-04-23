@@ -1161,33 +1161,33 @@ def collapse_sensor_failures(failures: list, verbose: bool = False) -> list:
     for rt in root_tasks:
         root_by_task_id[rt['task_id']] = rt
 
-    # Match sensors to root tasks. All wait_for_ sensors are removed from the
-    # output — they're downstream noise. Those that match a root task directly
-    # get attributed; unmatched ones are attributed to the root task with the
-    # most direct matches (likely the cascade origin).
+    # Sensors whose upstream task is in the failure list get collapsed into that
+    # root task's blocked_downstream. Unmatched sensors are kept in the output —
+    # they represent real signal (upstream failed outside the window, or lives
+    # in a DAG the Cloud Logging query didn't capture) that a triager needs to see.
     for rt in root_tasks:
         rt['blocked_downstream'] = []
 
-    unattributed_dags = []
+    unmatched_sensors = []
     for sensor in sensors:
         upstream_task_id = sensor['task_id'][len('wait_for_'):]
         if upstream_task_id in root_by_task_id:
             root_by_task_id[upstream_task_id]['blocked_downstream'].append(sensor['dag_id'])
         else:
-            unattributed_dags.append(sensor['dag_id'])
+            unmatched_sensors.append(sensor)
 
     # Deduplicate downstream DAG lists (a DAG may have multiple waiting sensors)
     for rt in root_tasks:
         rt['blocked_downstream'] = sorted(set(rt['blocked_downstream']))
 
     if verbose:
-        attributed = len(sensors) - len(unattributed_dags)
-        print(f"  {len(sensors)} sensor tasks suppressed ({attributed} directly attributed, {len(unattributed_dags)} unmatched)", file=sys.stderr)
+        attributed = len(sensors) - len(unmatched_sensors)
+        print(f"  {len(sensors)} sensor tasks ({attributed} collapsed into root tasks, {len(unmatched_sensors)} kept as orphans)", file=sys.stderr)
         for rt in root_tasks:
             if rt['blocked_downstream']:
                 print(f"    {rt['dag_id']}.{rt['task_id']} blocks {len(rt['blocked_downstream'])} downstream DAGs", file=sys.stderr)
 
-    return root_tasks
+    return root_tasks + unmatched_sensors
 
 
 def main():
