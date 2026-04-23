@@ -1,5 +1,7 @@
 # Mozdata Plugin for Claude Code
 
+> **⚠️ This repository has moved.** The plugin is now maintained in Mozilla's official internal plugin repository: [mozilla/internal-aidev-plugins](https://github.com/mozilla/internal-aidev-plugins/tree/main/plugins/mozdata). Please install from there to receive updates.
+
 A Claude Code plugin for working with Mozilla's data platform: telemetry probe discovery, BigQuery query writing, and Airflow DAG failure debugging.
 
 ## Installation
