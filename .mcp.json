@@ -7,6 +7,10 @@
         "metric-hub": {
             "type": "sse",
             "url": "https://metric-hub-mcp-744009727678.us-west1.run.app/sse"
+        },
+        "moz": {
+            "type": "http",
+            "url": "https://mcp-dev.moz.tools/mcp"
         }
     }
 }

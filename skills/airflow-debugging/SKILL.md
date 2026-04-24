@@ -4,7 +4,7 @@ description: >
   Investigate Mozilla Airflow DAG failures. Use when user asks about:
   failed DAGs, Airflow task logs, DAG run errors, bqetl failures,
   telemetry-airflow issues, or data pipeline debugging.
-allowed-tools: Read, WebSearch, WebFetch, Bash(gcloud auth print-access-token:*), Bash(gcloud logging read:*), Bash(gcloud storage cat:*), Bash(gcloud storage ls:*), Bash(bq query:*), Bash(git log:*), Bash(git show:*), Bash(git diff:*), Bash(gh search prs:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh api:*), Bash(*/scripts/fetch-task-log:*), Bash(*/scripts/get-triage-data:*)
+allowed-tools: Read, WebSearch, Bash(gcloud logging read:*), Bash(gcloud storage cat:*), Bash(gcloud storage ls:*), Bash(bq query:*), Bash(git log:*), Bash(git show:*), Bash(git diff:*), Bash(gh search prs:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(*/scripts/fetch-task-log:*), Bash(*/scripts/get-triage-data:*), Bash(*/scripts/search-bugzilla:*), mcp__plugin_mozdata_moz__get_bugzilla_bug
 ---
 
 # Airflow DAG Failure Investigation
@@ -138,15 +138,25 @@ gcloud logging read 'resource.type="k8s_container" AND resource.labels.namespace
 
 Before investigating, search Bugzilla for existing tickets related to the failing DAG. This avoids duplicate work and surfaces prior context.
 
-**Search open bugs for a DAG**:
-```
-https://bugzilla.mozilla.org/rest/bug?status_whiteboard=%5Bairflow-triage%5D&bug_status=NEW&bug_status=UNCONFIRMED&bug_status=CONFIRMED&bug_status=IN_PROGRESS&include_fields=id,summary,status,whiteboard,creation_time&limit=100
+Use `scripts/search-bugzilla` — it is pinned to `bugzilla.mozilla.org` and defaults to the `[airflow-triage]` whiteboard filter:
+
+```bash
+scripts/search-bugzilla <dag_id>                        # Open [airflow-triage] bugs matching DAG name
+scripts/search-bugzilla <dag_id> --status resolved      # Recently resolved matches
+scripts/search-bugzilla <dag_id> --status all           # Both
+scripts/search-bugzilla "<task_id>" --limit 10          # Narrow by task name
+scripts/search-bugzilla --all "<keywords>"              # Drop the whiteboard filter
+scripts/search-bugzilla <dag_id> --json                 # Structured output
 ```
 
-Use WebFetch to query this URL, then check if any bug summary contains the DAG name or task name. If a match is found:
+To read full context (change history + comments) for a bug ID the script returned, call
+`mcp__plugin_mozdata_moz__get_bugzilla_bug` with the bug ID. That goes through the
+Mozilla-hosted MCP server — no direct network access needed from the skill.
+
+If a match is found:
 - Link to the existing bug: `https://bugzilla.mozilla.org/show_bug.cgi?id=<bug_id>`
 - Note whether it's a known/ongoing issue
-- Include any context from the bug summary in your analysis
+- Include any context from the bug summary/comments in your analysis
 
 ## GitHub PR Investigation
 
@@ -194,7 +204,7 @@ and a note on which changed files are relevant.
 If the user provides a DAG name, skip straight to step 2. Only discover failures when no DAG name is given.
 
 1. Run `../airflow-triage/scripts/get-triage-data` to discover failures (skip if DAG name is already known)
-2. **Search Bugzilla** for existing tickets matching the DAG/task name (WebFetch the REST API URL above). If a bug exists, link it and note prior context before continuing.
+2. **Search Bugzilla** for existing tickets matching the DAG/task name using `scripts/search-bugzilla`. If a promising bug ID comes back, hydrate it with `mcp__plugin_mozdata_moz__get_bugzilla_bug` for history and comments. Link it and note prior context before continuing.
 3. Run `scripts/fetch-task-log <dag_id> --list-runs` to find recent runs
 4. Run `scripts/fetch-task-log <dag_id> --list-tasks --run-id <run_id>` to list tasks in the failing run
 5. Run `scripts/fetch-task-log <dag_id> <task_id> <run_id> --tail 100` to get the error

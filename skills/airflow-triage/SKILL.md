@@ -6,7 +6,7 @@ description: >
   check which DAGs are new/ongoing/resolved, or summarize Airflow incidents for a
   given time period.
 user-invocable: true
-allowed-tools: Bash(*/scripts/run-triage:*), Bash(*/scripts/fetch-task-log:*), Bash(*/scripts/get-triage-data:*), Bash(*/scripts/get-bugs:*), Bash(*/scripts/auto-investigate:*), Bash(*/scripts/generate-slack-message:*), Bash(gh search prs:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh api:*)
+allowed-tools: Bash(*/scripts/run-triage:*), Bash(*/scripts/fetch-task-log:*), Bash(*/scripts/get-triage-data:*), Bash(*/scripts/get-bugs:*), Bash(*/scripts/auto-investigate:*), Bash(*/scripts/generate-slack-message:*), Bash(gh search prs:*), Bash(gh pr view:*), Bash(gh pr list:*)
 ---
 
 # Airflow Triage Summary Generation

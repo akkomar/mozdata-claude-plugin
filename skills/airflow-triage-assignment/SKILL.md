@@ -4,7 +4,7 @@ description: >
   Check who is on Airflow triage this week, suggest the next triager, and update
   the rotation spreadsheet.
 user-invocable: true
-allowed-tools: Bash(*/scripts/get-triage-rotation:*), Bash(gcloud auth print-access-token:*)
+allowed-tools: Bash(*/scripts/get-triage-rotation:*)
 ---
 
 # Airflow Triage Assignment

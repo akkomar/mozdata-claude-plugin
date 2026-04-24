@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Search bugzilla.mozilla.org for bugs by free-text query.
+
+Pinned to bugzilla.mozilla.org/rest. Designed for the airflow-debugging
+flow: given a DAG or task name, list matching open/resolved bugs.
+
+Defaults to the [airflow-triage] whiteboard filter, but --all disables
+it for broader searches.
+
+The Mozilla-hosted `moz` MCP server exposes a `bugzilla_quick_search`
+tool (mozilla/bugbug PR #5580, merged 2026-03-31) that would replace
+this script. As of 2026-04-24 it is not yet deployed on
+mcp-dev.moz.tools (server reports v1.13.1). Once deployed, the skill
+can call `mcp__plugin_mozdata_moz__bugzilla_quick_search` directly and
+this wrapper can be retired.
+
+Examples:
+    scripts/search-bugzilla bqetl_main_summary
+    scripts/search-bugzilla "telemetry_derived clients_daily"
+    scripts/search-bugzilla bqetl_search --status resolved --limit 10
+    scripts/search-bugzilla --all "memory fault"
+    scripts/search-bugzilla bqetl_search --json
+"""
+
+import argparse
+import json
+import sys
+import urllib.parse
+import urllib.request
+
+BUGZILLA_REST = "https://bugzilla.mozilla.org/rest/bug"
+BUGZILLA_URL = "https://bugzilla.mozilla.org/show_bug.cgi?id="
+WHITEBOARD_TAG = "[airflow-triage]"
+
+OPEN_STATUSES = ['NEW', 'UNCONFIRMED', 'CONFIRMED', 'IN_PROGRESS', 'ASSIGNED', 'REOPENED']
+RESOLVED_STATUSES = ['RESOLVED', 'VERIFIED', 'CLOSED']
+
+
+def fetch_bugs(params: dict) -> list:
+    query = urllib.parse.urlencode(params, doseq=True)
+    url = f"{BUGZILLA_REST}?{query}"
+    req = urllib.request.Request(url)
+    req.add_header('User-Agent', 'airflow-debugging-tool/1.0')
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode())
+        return data.get('bugs', [])
+
+
+def build_params(query: str, whiteboard: str | None, statuses: list[str], limit: int) -> dict:
+    params: dict = {
+        'include_fields': 'id,summary,status,resolution,whiteboard,last_change_time,creation_time',
+        'limit': limit,
+    }
+    if whiteboard:
+        params['status_whiteboard'] = whiteboard
+    if statuses:
+        params['bug_status'] = statuses
+    if query:
+        # Bugzilla REST summary filter: substring match on summary field
+        params['summary'] = query
+        params['summary_type'] = 'allwordssubstr'
+    return params
+
+
+def format_bug_text(bug: dict) -> str:
+    bug_id = bug['id']
+    status = bug.get('status', 'N/A')
+    resolution = bug.get('resolution', '')
+    summary = bug.get('summary', 'N/A')
+    whiteboard = bug.get('whiteboard', '')
+    last = bug.get('last_change_time', '')
+    status_str = f"{status} {resolution}".strip()
+    lines = [
+        f"Bug {bug_id} [{status_str}] - {summary}",
+        f"  URL: {BUGZILLA_URL}{bug_id}",
+    ]
+    if whiteboard:
+        lines.append(f"  Whiteboard: {whiteboard}")
+    if last:
+        lines.append(f"  Last change: {last}")
+    return "\n".join(lines)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('query', nargs='?', default='', help='Free-text search (matched against bug summary, all words as substrings)')
+    p.add_argument('--status', choices=['open', 'resolved', 'all'], default='open',
+                   help='Filter by status group (default: open)')
+    p.add_argument('--all', action='store_true',
+                   help='Disable the default [airflow-triage] whiteboard filter')
+    p.add_argument('--whiteboard', default=WHITEBOARD_TAG,
+                   help=f'Whiteboard tag to filter on (default: {WHITEBOARD_TAG}). Use --all to disable.')
+    p.add_argument('--limit', type=int, default=25, help='Maximum bugs to return (default: 25)')
+    p.add_argument('--json', dest='as_json', action='store_true', help='Emit raw JSON list of bugs')
+    args = p.parse_args()
+
+    if not args.query and args.all and not args.whiteboard:
+        print("error: nothing to search — provide a query or keep the whiteboard filter", file=sys.stderr)
+        sys.exit(2)
+
+    whiteboard = None if args.all else args.whiteboard
+    if args.status == 'open':
+        statuses = OPEN_STATUSES
+    elif args.status == 'resolved':
+        statuses = RESOLVED_STATUSES
+    else:
+        statuses = []
+
+    params = build_params(args.query, whiteboard, statuses, args.limit)
+    try:
+        bugs = fetch_bugs(params)
+    except Exception as e:
+        print(f"Error fetching Bugzilla: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.as_json:
+        json.dump(bugs, sys.stdout, indent=2)
+        print()
+        return
+
+    if not bugs:
+        print("No bugs found.")
+        return
+
+    header = f"Found {len(bugs)} bug(s)"
+    if args.query:
+        header += f" matching '{args.query}'"
+    if whiteboard:
+        header += f" with whiteboard {whiteboard}"
+    header += f" ({args.status})"
+    print(header + ":\n")
+
+    for bug in bugs:
+        print(format_bug_text(bug))
+        print()
+
+
+if __name__ == '__main__':
+    main()
