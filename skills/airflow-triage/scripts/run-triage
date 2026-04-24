@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Runs the full airflow triage pipeline as a single command:
 #   get-triage-data -> get-bugs -> auto-investigate -> generate-slack-message
-# Stage logs go to --log (default /tmp/triage.log). Slack output on stdout.
+# Stage logs go to --log (default /tmp/triage.log).
+# Slack output goes to stdout AND to --out (default /tmp/airflow-triage-YYYYMMDD.txt);
+# pass --out "" to skip the file.
 # Exits with the first stage's failure code (set -o pipefail).
 
 set -euo pipefail
@@ -10,12 +12,17 @@ SINCE="24h"
 AS_OF=""
 VERBOSE=""
 LOG="/tmp/triage.log"
+OUT="/tmp/airflow-triage-$(date +%Y%m%d).txt"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--since 24h] [--as-of YYYY-MM-DD] [-v] [--log PATH]
+Usage: $(basename "$0") [--since 24h] [--as-of YYYY-MM-DD] [-v] [--log PATH] [--out PATH]
 
-Chains the four triage scripts and prints Slack message blocks on stdout.
+Chains the four triage scripts and writes Slack message blocks to stdout
+AND to --out (default: /tmp/airflow-triage-YYYYMMDD.txt). Copy-paste from
+the file — terminal line-wrapping breaks Slack <url|label> syntax.
+Pass --out "" to skip the file.
+
 Stage stderr is merged into --log (default: /tmp/triage.log).
 
 If get-triage-data exits with code 2, run 'gcloud auth login' and retry.
@@ -29,6 +36,7 @@ while [[ $# -gt 0 ]]; do
         --as-of) AS_OF="$2"; shift 2;;
         -v|--verbose) VERBOSE="-v"; shift;;
         --log) LOG="$2"; shift 2;;
+        --out) OUT="$2"; shift 2;;
         -h|--help) usage 0;;
         *) echo "unknown argument: $1" >&2; usage 1;;
     esac
@@ -46,8 +54,11 @@ bugs_args=(--since "$SINCE")
 inv_args=()
 [[ -n "$VERBOSE" ]] && inv_args+=("$VERBOSE")
 
+slack_args=()
+[[ -n "$OUT" ]] && slack_args+=(--out "$OUT")
+
 : > "$LOG"
 "$DIR/get-triage-data" "${triage_args[@]}" 2>>"$LOG" \
   | "$DIR/get-bugs" "${bugs_args[@]}" 2>>"$LOG" \
   | "$DIR/auto-investigate" "${inv_args[@]}" 2>>"$LOG" \
-  | "$DIR/generate-slack-message"
+  | "$DIR/generate-slack-message" "${slack_args[@]}"

@@ -160,13 +160,25 @@ Produces a main message and one thread per DAG, with Markdown links to Airflow
 UI and Bugzilla.
 
 ```bash
-scripts/auto-investigate --failures triage.json | scripts/generate-slack-message
-scripts/generate-slack-message --failures investigated.json --date 2026-04-15
+# Always pass --out so the blocks land in a file with intact URLs.
+scripts/auto-investigate --failures triage.json | scripts/generate-slack-message --out /tmp/airflow-triage.txt
+scripts/generate-slack-message --failures investigated.json --out /tmp/airflow-triage.txt --date 2026-04-15
 ```
 
 Output is plain text blocks separated by `---`:
 - First block: main message (`:airflow: Airflow triage YYYY-MM-DD`)
 - Subsequent blocks: one thread per DAG, grouped by category (new/ongoing/resolved)
+
+**Format is composer-friendly**, not mrkdwn-API. DAG names and task IDs are
+shown as `*bold*` text; URLs sit on their own lines so Slack's composer
+auto-links them on paste. The `<url|label>` mrkdwn syntax is intentionally
+*not* used — it only works for messages posted via the Slack API; pasting it
+into the composer produces broken URL-encoded links.
+
+**Why `--out` matters:** Terminal UIs (including Claude Code) wrap long URLs
+mid-string when displaying stdout. A broken URL doesn't auto-link in Slack
+either. `--out` writes a verbatim copy to a file alongside stdout — always
+copy-paste from the file, not from the terminal.
 
 ## Bugzilla Bug Filing Template
 
@@ -252,11 +264,18 @@ Skip this phase if the user said no to bug filing, or if all failures already ha
 **Do not show Slack blocks until Phases 3 and 4 are complete** (or skipped by the user).
 This ensures all bug IDs and corrected descriptions are included.
 
-The pipeline in Phase 1 already produces Slack output via `scripts/generate-slack-message`.
+The pipeline in Phase 1 already produces Slack output via `scripts/generate-slack-message`
+and writes it to `/tmp/airflow-triage-YYYYMMDD.txt` by default (see `--out`).
 If data changed during investigation or bug filing (new bug IDs, corrected descriptions),
-re-run `generate-slack-message` with updated JSON or manually adjust the blocks.
+re-run `generate-slack-message --out <path>` with updated JSON, or manually adjust the blocks
+and rewrite the file.
 
 Present the output to the user as copy-pasteable blocks (main message + one thread per DAG).
+**Always end the response with the file path**, e.g.:
+
+> Copy-paste from `/tmp/airflow-triage-YYYYMMDD.txt` (use `open` or `cat` on macOS) —
+> do not copy from the displayed blocks above, terminal line-wrapping breaks the Slack
+> `<url|label>` syntax for long URLs.
 :airflow: Airflow triage
 
 <dag_id> (owner: @<slack_handle>)
