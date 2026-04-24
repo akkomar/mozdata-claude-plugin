@@ -4,7 +4,7 @@ description: >
   Investigate Mozilla Airflow DAG failures. Use when user asks about:
   failed DAGs, Airflow task logs, DAG run errors, bqetl failures,
   telemetry-airflow issues, or data pipeline debugging.
-allowed-tools: Read, WebSearch, Bash(gcloud logging read:*), Bash(gcloud storage cat:*), Bash(gcloud storage ls:*), Bash(bq query:*), Bash(git log:*), Bash(git show:*), Bash(git diff:*), Bash(gh search prs:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(*/scripts/fetch-task-log:*), Bash(*/scripts/get-triage-data:*), Bash(*/scripts/search-bugzilla:*), mcp__plugin_mozdata_moz__get_bugzilla_bug
+allowed-tools: Read, WebSearch, Bash(gcloud logging read:*), Bash(gcloud storage cat:*), Bash(gcloud storage ls:*), Bash(git log:*), Bash(git show:*), Bash(git diff:*), Bash(gh search prs:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(*/scripts/fetch-task-log:*), Bash(*/scripts/get-triage-data:*), Bash(*/scripts/search-bugzilla:*), mcp__plugin_mozdata_moz__get_bugzilla_bug
 ---
 
 # Airflow DAG Failure Investigation
