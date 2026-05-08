@@ -23,7 +23,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -34,10 +33,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
           trigger_phrase: "@claude"
-          track_progress: true
           include_fix_links: false
-          use_sticky_comment: true
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -48,6 +46,15 @@ jobs:
             - Security implications
             - Performance considerations
 
-            Provide detailed feedback using inline comments for specific issues.
+            Post a single formal GitHub review using these tools in order:
+            1. `mcp__github__create_pending_pull_request_review` to start a pending review.
+            2. `mcp__github__add_comment_to_pending_review` for each inline finding tied to specific lines.
+            3. `mcp__github__submit_pending_pull_request_review` to finalize, with cross-cutting observations and overall assessment in the review body.
+
+            Do not post separate top-level PR comments.
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowedTools mcp__github__create_pending_pull_request_review,mcp__github__add_comment_to_pending_review
+            --allowedTools mcp__github__submit_pending_pull_request_review,mcp__github__delete_pending_pull_request_review
+            --allowedTools mcp__github__get_pull_request_reviews,mcp__github__get_pull_request_review_comments,mcp__github__add_reply_to_pull_request_comment
+            --allowedTools mcp__github__get_workflow_run,mcp__github__list_workflow_runs,mcp__github__list_workflow_jobs
+            --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
